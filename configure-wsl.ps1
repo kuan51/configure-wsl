@@ -842,18 +842,18 @@ if ! grep -q "Welcome Viber" ~/.bashrc 2>/dev/null; then
     echo '    echo -e "\033[1;36m"' >> ~/.bashrc
     echo '    echo "        a8888b.                    Welcome Viber, let'\''s get to work!"' >> ~/.bashrc
     echo '    echo "             d888888b."' >> ~/.bashrc
-    echo '    echo "             8P\"YP\"Y88              Your WSL Ubuntu development environment"' >> ~/.bashrc
-    echo '    echo "             8|o||o|88              is ready and configured!"' >> ~/.bashrc
-    echo '    echo "             8'\''    .88"' >> ~/.bashrc
-    echo '    echo "             8\`._.\'' Y8.             Features: FiraCode Font, Starship, Dev Tools"' >> ~/.bashrc
-    echo '    echo "            d/      \`8b."' >> ~/.bashrc
-    echo '    echo "          .dP   .     Y8b.          Tips: '\''code .\'' for VS Code, '\''git'\'' for version control"' >> ~/.bashrc
-    echo '    echo "         d8:'\''   \"   \`::88b."' >> ~/.bashrc
-    echo '    echo "        d8\"           \`Y88b         Happy coding!"' >> ~/.bashrc
-    echo '    echo "       :8P     '\''       :888"' >> ~/.bashrc
+    echo '    echo "             8P\"YP\"Y88              OS: $(lsb_release -ds 2>/dev/null || echo \"Linux\")"' >> ~/.bashrc
+    echo '    echo "             8|o||o|88              Host: $(cat /proc/sys/kernel/hostname)"' >> ~/.bashrc
+    echo '    echo "             8'\''    .88              Kernel: $(uname -r)"' >> ~/.bashrc
+    echo '    echo "             8\`._.\'' Y8.             Shell: $SHELL"' >> ~/.bashrc
+    echo '    echo "            d/      \`8b.            Terminal: ${TERM:-unknown}"' >> ~/.bashrc
+    echo '    echo "          .dP   .     Y8b.          CPU: $(grep '\''model name'\'' /proc/cpuinfo | head -1 | cut -d: -f2 | sed '\''s/^ *//'\'')"' >> ~/.bashrc
+    echo '    echo "         d8:'\''   \"   \`::88b.         GPU:"' >> ~/.bashrc
+    echo '    echo "        d8\"           \`Y88b         Memory: $(free -h | awk '\''/^Mem:/ {print $2}'\'')"' >> ~/.bashrc
+    echo '    echo "       :8P     '\''       :888         Swap: $(free -h | awk '\''/^Swap:/ {print $2}'\'')"' >> ~/.bashrc
     echo '    echo "        8a.    :      _a88P"' >> ~/.bashrc
-    echo '    echo "      ._/\"Yaa_ :    .| 88P|"' >> ~/.bashrc
-    echo '    echo " jgs  \\    YP\"      \`| 8P  \`."' >> ~/.bashrc
+    echo '    echo "      ._/\"Yaa_ :    .| 88P|        Features: FiraCode Font, Starship, Dev Tools"' >> ~/.bashrc
+    echo '    echo " jgs  \\    YP\"      \`| 8P  \`.      Happy coding!"' >> ~/.bashrc
     echo '    echo " a:f  /     \\._____.d|    .'\''"' >> ~/.bashrc
     echo '    echo "      \`--..__)888888P\`._.'\''"' >> ~/.bashrc
     echo '    echo -e "\033[0m"' >> ~/.bashrc
