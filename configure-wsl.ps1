@@ -163,7 +163,7 @@ function Test-Prerequisites {
     
     # Check internet connectivity
     try {
-        $testConnection = Test-NetConnection -ComputerName "github.com" -Port 443 -InformationLevel Quiet -WarningAction SilentlyContinue
+        $testConnection = Test-NetConnection -ComputerName "github.com" -Port 443 -InformationLevel Quiet -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
         if (-not $testConnection) {
             throw "Internet connectivity required for downloads"
         }
@@ -808,6 +808,82 @@ echo "WSL distribution setup completed"
     }
 }
 
+function Set-WSLWelcomeMessage {
+    <#
+    .SYNOPSIS
+        Set up a welcome message with Linux penguin ASCII art for WSL
+    .DESCRIPTION
+        Creates a welcome message with penguin ASCII art that displays when starting a new WSL terminal session
+    .PARAMETER DistroName
+        Name of the WSL distribution
+    .PARAMETER Username
+        Username to configure the welcome message for
+    .EXAMPLE
+        Set-WSLWelcomeMessage -DistroName "Ubuntu" -Username "myuser"
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DistroName,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$Username
+    )
+    
+    try {
+        # Create simple bash script to add welcome message
+        $bashScript = @'
+#!/bin/bash
+
+# Check if welcome message is already in bashrc
+if ! grep -q "Welcome Viber" ~/.bashrc 2>/dev/null; then
+    echo "" >> ~/.bashrc
+    echo "# Custom welcome message" >> ~/.bashrc
+    echo "if [ -t 1 ]; then" >> ~/.bashrc
+    echo '    echo -e "\033[1;36m"' >> ~/.bashrc
+    echo '    echo "        a8888b.                    Welcome Viber, let'\''s get to work!"' >> ~/.bashrc
+    echo '    echo "             d888888b."' >> ~/.bashrc
+    echo '    echo "             8P\"YP\"Y88              Your WSL Ubuntu development environment"' >> ~/.bashrc
+    echo '    echo "             8|o||o|88              is ready and configured!"' >> ~/.bashrc
+    echo '    echo "             8'\''    .88"' >> ~/.bashrc
+    echo '    echo "             8\`._.\'' Y8.             Features: FiraCode Font, Starship, Dev Tools"' >> ~/.bashrc
+    echo '    echo "            d/      \`8b."' >> ~/.bashrc
+    echo '    echo "          .dP   .     Y8b.          Tips: '\''code .\'' for VS Code, '\''git'\'' for version control"' >> ~/.bashrc
+    echo '    echo "         d8:'\''   \"   \`::88b."' >> ~/.bashrc
+    echo '    echo "        d8\"           \`Y88b         Happy coding!"' >> ~/.bashrc
+    echo '    echo "       :8P     '\''       :888"' >> ~/.bashrc
+    echo '    echo "        8a.    :      _a88P"' >> ~/.bashrc
+    echo '    echo "      ._/\"Yaa_ :    .| 88P|"' >> ~/.bashrc
+    echo '    echo " jgs  \\    YP\"      \`| 8P  \`."' >> ~/.bashrc
+    echo '    echo " a:f  /     \\._____.d|    .'\''"' >> ~/.bashrc
+    echo '    echo "      \`--..__)888888P\`._.'\''"' >> ~/.bashrc
+    echo '    echo -e "\033[0m"' >> ~/.bashrc
+    echo '    echo ""' >> ~/.bashrc
+    echo "fi" >> ~/.bashrc
+    echo "Welcome message added to .bashrc"
+else
+    echo "Welcome message already exists in .bashrc"
+fi
+'@
+        
+        # Convert to base64 to avoid quoting issues
+        $scriptBytes = [System.Text.Encoding]::UTF8.GetBytes($bashScript)
+        $base64Script = [System.Convert]::ToBase64String($scriptBytes)
+        
+        # Execute the script
+        $result = & wsl.exe -d $DistroName --user $Username bash -c "echo '$base64Script' | base64 -d | bash"
+        
+        if ($LASTEXITCODE -eq 0) {
+            Write-Log "Welcome message configured successfully" -Level "SUCCESS"
+        }
+        else {
+            Write-Log "Warning: Could not add welcome message to shell profiles" -Level "WARN"
+        }
+    }
+    catch {
+        Write-Log "Error setting up welcome message: $_" -Level "WARN"
+    }
+}
+
 function Set-WSLDefaultUser {
     <#
     .SYNOPSIS
@@ -939,6 +1015,11 @@ default=$Username
         $testUser = & wsl.exe -d $DistroName --user $Username whoami 2>$null
         if ($LASTEXITCODE -eq 0 -and $testUser.Trim() -eq $Username) {
             Write-Log "User setup verified successfully" -Level "SUCCESS"
+            
+            # Add welcome message to user's shell profile
+            Write-Log "Setting up welcome message..." -Level "INFO"
+            Set-WSLWelcomeMessage -DistroName $DistroName -Username $Username
+            
             return $true
         }
         else {
@@ -1111,7 +1192,7 @@ mkdir -p "$HOME/.local/bin"
 
 # Download and install Starship to user's local bin
 export BIN_DIR="$HOME/.local/bin"
-curl -sS https://starship.rs/install.sh | sh -s -- -y -b "$BIN_DIR"
+curl -sS https://starship.rs/install.sh | sh -s -- -y -b "$BIN_DIR" 2>/dev/null
 
 # Ensure local bin is in PATH
 export PATH="$HOME/.local/bin:$PATH"
@@ -1214,8 +1295,16 @@ function Install-FiraCodeFont {
         
         $webClient = New-Object System.Net.WebClient
         $webClient.Headers.Add("User-Agent", "PowerShell WSL Configuration Script")
-        $webClient.DownloadFile($fontUrl, $zipPath)
-        $webClient.Dispose()
+        
+        # Suppress progress bar and download quietly
+        $ProgressPreference = 'SilentlyContinue'
+        try {
+            $webClient.DownloadFile($fontUrl, $zipPath)
+        }
+        finally {
+            $webClient.Dispose()
+            $ProgressPreference = 'Continue'
+        }
         
         # Extract fonts
         Write-Log "Extracting font files..." -Level "INFO"

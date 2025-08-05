@@ -25,7 +25,10 @@ Describe "ConfigureWSL Module Import" {
             'Update-VSCodeConfig',
             'Test-Prerequisites',
             'Write-Log',
-            'Initialize-Logging'
+            'Initialize-Logging',
+            'Get-WSLErrorMessage',
+            'Test-WSLDistributionState',
+            'Set-WSLWelcomeMessage'
         )
         
         $exportedFunctions = @((Get-Module ConfigureWSL).ExportedFunctions.Keys)
@@ -211,6 +214,44 @@ Describe "ConfigureWSL WSL Functions" {
         }
         
         $result = Install-StarshipInWSL -DistroName "Ubuntu" -Username "testuser"
+        $result | Should BeOfType [System.Boolean]
+    }
+    
+    It "Get-WSLErrorMessage should return string value" {
+        $result = Get-WSLErrorMessage -ExitCode -1
+        $result | Should BeOfType [System.String]
+    }
+    
+    It "Get-WSLErrorMessage should handle error code -1 with specific error output" {
+        $result = Get-WSLErrorMessage -ExitCode -1 -ErrorOutput "Error: 0x8000000d"
+        ($result -like "*Another WSL operation*") | Should Be $true
+    }
+    
+    It "Test-WSLDistributionState should accept DistroName parameter" {
+        { Test-WSLDistributionState -DistroName "Ubuntu" } | Should Not Throw
+    }
+    
+    It "Test-WSLDistributionState should return boolean value" {
+        # Mock WSL command to avoid actual checking
+        Mock -CommandName "Invoke-Expression" -MockWith { 
+            return $null
+        }
+        
+        $result = Test-WSLDistributionState -DistroName "Ubuntu"
+        $result | Should BeOfType [System.Boolean]
+    }
+    
+    It "Set-WSLWelcomeMessage should accept DistroName and Username parameters" {
+        { Set-WSLWelcomeMessage -DistroName "Ubuntu" -Username "testuser" } | Should Not Throw
+    }
+    
+    It "Set-WSLWelcomeMessage should return boolean value" {
+        # Mock WSL command to avoid actual execution
+        Mock -CommandName "Invoke-Expression" -MockWith { 
+            $global:LASTEXITCODE = 0
+        }
+        
+        $result = Set-WSLWelcomeMessage -DistroName "Ubuntu" -Username "testuser"
         $result | Should BeOfType [System.Boolean]
     }
 }

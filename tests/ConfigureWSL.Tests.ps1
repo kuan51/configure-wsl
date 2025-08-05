@@ -176,7 +176,8 @@ Describe "ConfigureWSL Module Import" {
                 'Write-Log',
                 'Initialize-Logging',
                 'Get-WSLErrorMessage',
-                'Test-WSLDistributionState'
+                'Test-WSLDistributionState',
+                'Set-WSLWelcomeMessage'
             )
             
             # Note: Test-IsAdministrator is not exported (private function)
@@ -491,6 +492,42 @@ Describe "ConfigureWSL WSL Functions" {
                 Mock -CommandName "Start-Sleep" -MockWith {}
                 
                 Test-ShouldNotThrow { Test-WSLDistributionState -DistroName "Ubuntu" }
+            }
+        }
+
+        Describe "Set-WSLWelcomeMessage" {
+            It "Should accept DistroName and Username parameters" {
+                Test-ShouldNotThrow { Set-WSLWelcomeMessage -DistroName "Ubuntu" -Username "testuser" }
+            }
+            
+            It "Should return boolean value" {
+                # Mock WSL command to avoid actual execution
+                Mock -CommandName "Invoke-Expression" -MockWith { 
+                    $global:LASTEXITCODE = 0
+                }
+                
+                $result = Set-WSLWelcomeMessage -DistroName "Ubuntu" -Username "testuser"
+                Test-ShouldBeOfType $result [System.Boolean]
+            }
+            
+            It "Should handle WSL execution errors gracefully" {
+                # Mock WSL command to return error
+                Mock -CommandName "Invoke-Expression" -MockWith { 
+                    $global:LASTEXITCODE = 1
+                }
+                
+                $result = Set-WSLWelcomeMessage -DistroName "Ubuntu" -Username "testuser"
+                Test-ShouldBeOfType $result [System.Boolean]
+                Test-ShouldBe $result $false
+            }
+            
+            It "Should not throw exceptions" {
+                # Mock all external commands
+                Mock -CommandName "Invoke-Expression" -MockWith { 
+                    $global:LASTEXITCODE = 0
+                }
+                
+                Test-ShouldNotThrow { Set-WSLWelcomeMessage -DistroName "Ubuntu" -Username "testuser" }
             }
         }
 }
