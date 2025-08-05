@@ -12,6 +12,8 @@
 
 A professional-grade PowerShell module that automatically sets up a fully configured WSL development environment with Ubuntu, Starship prompt, and FiraCode Nerd Font for an optimal coding experience in Windows Terminal and VS Code.
 
+![ConfigureWSL Screenshot](docs/screenshot.png)
+
 ## ✨ Features
 
 - 🐧 **Automated WSL & Ubuntu Installation** - Complete WSL setup with modern installation methods
@@ -52,7 +54,7 @@ Install-WSLEnvironment
 The original standalone script is still available:
 
 ```powershell
-# Run as Administrator  
+# Run as Administrator
 .\configure-wsl.ps1
 ```
 
@@ -71,7 +73,7 @@ The original standalone script is still available:
 # Install with all default settings
 Install-WSLEnvironment
 
-# Skip font installation  
+# Skip font installation
 Install-WSLEnvironment -SkipFontInstall
 
 # Skip Starship prompt
@@ -106,33 +108,36 @@ Install-StarshipInWSL -DistroName "Ubuntu"
 ## 🎯 What Gets Installed
 
 ### Core Components
+
 1. **WSL2 with Ubuntu** (or specified distribution)
 2. **Starship Prompt** with shell integration
 3. **FiraCode Nerd Font** with ligature support
 
 ### Automatic Configuration
+
 - **Windows Terminal**: Font settings and profile optimization
 - **Visual Studio Code**: Integrated terminal and editor fonts
 - **WSL Environment**: Shell prompt and dependencies
 
 ### Supporting Features
+
 - **Logging System**: Comprehensive installation tracking
 - **Backup System**: Configuration file backups with restoration
 - **Error Recovery**: Graceful handling of installation issues
 
 ## 📖 Module Functions
 
-| Function | Description |
-|----------|-------------|
-| `Install-WSLEnvironment` | Main orchestration function |
-| `Test-WSLInstallation` | Check WSL installation status |
-| `Install-WSLDistribution` | Install specific WSL distribution |
-| `Install-FiraCodeFont` | Download and install FiraCode Nerd Font |
-| `Install-StarshipInWSL` | Install and configure Starship prompt |
-| `Update-WindowsTerminalConfig` | Configure Windows Terminal settings |
-| `Update-VSCodeConfig` | Configure VS Code font settings |
-| `Test-Prerequisites` | Validate system requirements |
-| `Test-IsAdministrator` | Check administrator privileges |
+| Function                       | Description                             |
+| ------------------------------ | --------------------------------------- |
+| `Install-WSLEnvironment`       | Main orchestration function             |
+| `Test-WSLInstallation`         | Check WSL installation status           |
+| `Install-WSLDistribution`      | Install specific WSL distribution       |
+| `Install-FiraCodeFont`         | Download and install FiraCode Nerd Font |
+| `Install-StarshipInWSL`        | Install and configure Starship prompt   |
+| `Update-WindowsTerminalConfig` | Configure Windows Terminal settings     |
+| `Update-VSCodeConfig`          | Configure VS Code font settings         |
+| `Test-Prerequisites`           | Validate system requirements            |
+| `Test-IsAdministrator`         | Check administrator privileges          |
 
 ## 🧪 Testing
 
@@ -150,8 +155,9 @@ The module includes comprehensive testing with Pester:
 ```
 
 ### Test Coverage
+
 - **Unit Tests**: Individual function testing with mocking
-- **Integration Tests**: End-to-end workflow validation  
+- **Integration Tests**: End-to-end workflow validation
 - **Mock Tests**: External dependency simulation
 - **Error Handling**: Exception and edge case testing
 
@@ -216,6 +222,7 @@ See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for detailed guidelines.
 ### Common Issues
 
 #### WSL Installation Fails
+
 ```powershell
 # Check WSL status
 Test-WSLInstallation
@@ -226,11 +233,13 @@ wsl --install
 ```
 
 #### Font Not Applied
+
 - Restart Windows Terminal and VS Code
 - Verify font installation: Check Windows Settings > Fonts
 - Manually select "FiraCode Nerd Font" in application settings
 
 #### Permission Errors
+
 ```powershell
 # Verify administrator privileges
 Test-IsAdministrator
@@ -265,12 +274,14 @@ Test-Prerequisites
 ### Verification Steps
 
 1. **Restart Applications**
+
    ```powershell
    # Close and reopen Windows Terminal
    # Restart VS Code
    ```
 
 2. **Test WSL Environment**
+
    ```bash
    # In WSL terminal
    starship --version
