@@ -1105,12 +1105,25 @@ else
     echo "Warning: Could not install system packages. Continuing with Starship installation..."
 fi
 
-echo "Installing Starship prompt..."
-curl -sS https://starship.rs/install.sh | sh -s -- -y
+echo "Installing Starship prompt to user directory..."
+# Create local bin directory if it doesn't exist
+mkdir -p "$HOME/.local/bin"
+
+# Download and install Starship to user's local bin
+export BIN_DIR="$HOME/.local/bin"
+curl -sS https://starship.rs/install.sh | sh -s -- -y -b "$BIN_DIR"
+
+# Ensure local bin is in PATH
+export PATH="$HOME/.local/bin:$PATH"
 
 echo "Configuring shell integration..."
 # Configure bash
 BASHRC="$HOME/.bashrc"
+# Add local bin to PATH if not already there
+if ! grep -q '$HOME/.local/bin' "$BASHRC" 2>/dev/null; then
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$BASHRC"
+fi
+
 if ! grep -q "starship init" "$BASHRC" 2>/dev/null; then
     echo 'eval "$(starship init bash)"' >> "$BASHRC"
     echo "Added Starship to .bashrc"
@@ -1118,6 +1131,11 @@ fi
 
 # Configure zsh if present
 if [ -f "$HOME/.zshrc" ]; then
+    # Add local bin to PATH if not already there
+    if ! grep -q '$HOME/.local/bin' "$HOME/.zshrc" 2>/dev/null; then
+        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zshrc"
+    fi
+    
     if ! grep -q "starship init" "$HOME/.zshrc" 2>/dev/null; then
         echo 'eval "$(starship init zsh)"' >> "$HOME/.zshrc"
         echo "Added Starship to .zshrc"
@@ -1234,9 +1252,29 @@ function Install-FiraCodeFont {
                         
                         # Register font with Windows (for better compatibility)
                         try {
-                            $shell = New-Object -ComObject Shell.Application
-                            $fontsFolder = $shell.Namespace(0x14)  # Fonts folder
-                            $fontsFolder.CopyHere($fontFile.FullName, 0x10)  # Don't show progress
+                            # Use Windows API to install font silently
+                            $signature = @'
+[DllImport("gdi32.dll", CharSet = CharSet.Auto)]
+public static extern int AddFontResource(string lpszFilename);
+
+[DllImport("user32.dll", CharSet = CharSet.Auto)]
+public static extern int SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+'@
+                            $type = Add-Type -MemberDefinition $signature -Name FontInstaller -Namespace Win32Functions -PassThru -ErrorAction SilentlyContinue
+                            
+                            # Add font resource
+                            $result = [Win32Functions.FontInstaller]::AddFontResource($destinationPath)
+                            if ($result -gt 0) {
+                                # Broadcast font change message
+                                $HWND_BROADCAST = [IntPtr]0xffff
+                                $WM_FONTCHANGE = 0x1D
+                                [Win32Functions.FontInstaller]::SendMessage($HWND_BROADCAST, $WM_FONTCHANGE, [IntPtr]::Zero, [IntPtr]::Zero)
+                                
+                                # Register in registry for persistence
+                                $regPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"
+                                $fontName = [System.IO.Path]::GetFileNameWithoutExtension($fontFile.Name)
+                                Set-ItemProperty -Path $regPath -Name "$fontName (TrueType)" -Value $fontFile.Name -ErrorAction SilentlyContinue
+                            }
                         }
                         catch {
                             # Fallback: Just copy the file (already done above)
@@ -1372,18 +1410,27 @@ function Update-VSCodeConfig {
         $backupPath = New-ConfigurationBackup -FilePath $settingsPath -BackupName "vscode-settings"
         
         # Read existing settings or create new
-        $settings = @{}
+        $settingsObj = $null
         if (Test-Path $settingsPath) {
             $settingsContent = Get-Content $settingsPath -Raw -Encoding UTF8
             if ($settingsContent.Trim()) {
-                $settings = $settingsContent | ConvertFrom-Json
+                $settingsObj = $settingsContent | ConvertFrom-Json
+            }
+        }
+        
+        # Convert to hashtable for easier manipulation
+        $settings = @{}
+        if ($settingsObj) {
+            # Convert PSCustomObject to hashtable
+            $settingsObj.PSObject.Properties | ForEach-Object {
+                $settings[$_.Name] = $_.Value
             }
         }
         
         # Update font settings
-        $settings."terminal.integrated.fontFamily" = "FiraCode Nerd Font"
-        $settings."editor.fontFamily" = "FiraCode Nerd Font, Consolas, 'Courier New', monospace"
-        $settings."editor.fontLigatures" = $true
+        $settings["terminal.integrated.fontFamily"] = "FiraCode Nerd Font"
+        $settings["editor.fontFamily"] = "FiraCode Nerd Font, Consolas, 'Courier New', monospace"
+        $settings["editor.fontLigatures"] = $true
         
         # Ensure directory exists
         $settingsDir = Split-Path $settingsPath -Parent
@@ -1392,7 +1439,8 @@ function Update-VSCodeConfig {
         }
         
         # Write settings
-        $settings | ConvertTo-Json -Depth 20 | Set-Content -Path $settingsPath -Encoding UTF8
+        $settingsJson = $settings | ConvertTo-Json -Depth 20
+        Set-Content -Path $settingsPath -Value $settingsJson -Encoding UTF8
         Write-Log "VS Code configuration updated successfully" -Level "SUCCESS"
         return $true
     }
