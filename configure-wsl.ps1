@@ -127,15 +127,32 @@ function Test-Prerequisites {
         throw "Windows 10 or later is required for WSL"
     }
     
-    # Check WSL availability
-    try {
-        $wslHelp = wsl.exe --help 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            throw "WSL is not available. Please enable WSL feature first."
+    # Enhanced Windows version check for WSL2
+    $buildNumber = [System.Environment]::OSVersion.Version.Build
+    if ($windowsVersion.Major -eq 10 -and $buildNumber -lt 19041) {
+        Write-Log "Warning: WSL2 requires Windows 10 version 2004 (build 19041) or later. Current build: $buildNumber" -Level "WARN"
+        Write-Log "WSL1 may still work, but WSL2 is recommended for better performance" -Level "WARN"
+    }
+    
+    # Check WSL installation status
+    $wslStatus = Test-WSLInstallation
+    if ($wslStatus.IsInstalled -eq $false) {
+        Write-Log "WSL is not installed. Attempting automatic installation..." -Level "WARN"
+        $installResult = Install-WSLFeature
+        if (-not $installResult) {
+            throw "Failed to install WSL. Please install WSL manually using 'wsl --install' in an elevated PowerShell session."
+        }
+        Write-Log "WSL installation completed. A system restart may be required." -Level "SUCCESS"
+    }
+    elseif ($wslStatus.IsEnabled -eq $false) {
+        Write-Log "WSL feature is installed but not enabled. Attempting to enable..." -Level "WARN"
+        $enableResult = Enable-WSLFeature
+        if (-not $enableResult) {
+            throw "Failed to enable WSL feature. Please enable it manually in Windows Features."
         }
     }
-    catch {
-        throw "WSL command not found. Please install WSL first."
+    else {
+        Write-Log "WSL is properly installed and available (Version: $($wslStatus.Version))" -Level "SUCCESS"
     }
     
     # Check internet connectivity
@@ -150,6 +167,169 @@ function Test-Prerequisites {
     }
     
     Write-Log "Prerequisites check completed successfully" -Level "SUCCESS"
+}
+
+function Test-WSLInstallation {
+    <#
+    .SYNOPSIS
+        Test if WSL is installed and properly configured
+    .OUTPUTS
+        PSCustomObject with IsInstalled, IsEnabled, and Version properties
+    #>
+    $result = [PSCustomObject]@{
+        IsInstalled = $false
+        IsEnabled = $false
+        Version = $null
+    }
+    
+    try {
+        # Method 1: Try to execute wsl.exe
+        $wslCommand = Get-Command "wsl.exe" -ErrorAction SilentlyContinue
+        if ($wslCommand) {
+            # WSL executable exists, test if it works
+            $wslOutput = & wsl.exe --status 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                $result.IsInstalled = $true
+                $result.IsEnabled = $true
+                
+                # Try to get version information
+                try {
+                    $versionOutput = & wsl.exe --version 2>$null
+                    if ($LASTEXITCODE -eq 0 -and $versionOutput) {
+                        $result.Version = ($versionOutput | Select-Object -First 1).Trim()
+                    }
+                    else {
+                        $result.Version = "WSL1 or Unknown"
+                    }
+                }
+                catch {
+                    $result.Version = "Unknown"
+                }
+            }
+            else {
+                # WSL exists but might not be enabled
+                $result.IsInstalled = $true
+                $result.IsEnabled = $false
+            }
+        }
+        else {
+            # Method 2: Check Windows Features if wsl.exe doesn't exist
+            $wslFeature = Get-WindowsOptionalFeature -Online -FeatureName "Microsoft-Windows-Subsystem-Linux" -ErrorAction SilentlyContinue
+            if ($wslFeature) {
+                $result.IsInstalled = $true
+                $result.IsEnabled = ($wslFeature.State -eq "Enabled")
+                $result.Version = "WSL Feature Available"
+            }
+        }
+    }
+    catch {
+        Write-Log "Error checking WSL installation status: $_" -Level "WARN"
+    }
+    
+    return $result
+}
+
+function Install-WSLFeature {
+    <#
+    .SYNOPSIS
+        Install WSL using the modern wsl --install command
+    .OUTPUTS
+        Boolean indicating success
+    #>
+    Write-Log "Installing WSL feature..." -Level "INFO"
+    
+    try {
+        # Use the modern wsl --install command (Windows 10 2004+)
+        $installProcess = Start-Process -FilePath "wsl.exe" -ArgumentList "--install", "--no-distribution" -Wait -PassThru -NoNewWindow -Verb RunAs
+        
+        if ($installProcess.ExitCode -eq 0) {
+            Write-Log "WSL installation completed successfully" -Level "SUCCESS"
+            Write-Log "Note: A system restart may be required before WSL can be used" -Level "INFO"
+            return $true
+        }
+        else {
+            Write-Log "WSL installation failed with exit code: $($installProcess.ExitCode)" -Level "ERROR"
+            
+            # Fallback: Try enabling WSL feature via DISM
+            Write-Log "Attempting fallback installation via DISM..." -Level "INFO"
+            return Install-WSLFeatureViaDISM
+        }
+    }
+    catch {
+        Write-Log "Error during WSL installation: $_" -Level "ERROR"
+        
+        # Fallback: Try enabling WSL feature via DISM
+        Write-Log "Attempting fallback installation via DISM..." -Level "INFO"
+        return Install-WSLFeatureViaDISM
+    }
+}
+
+function Install-WSLFeatureViaDISM {
+    <#
+    .SYNOPSIS
+        Install WSL using DISM (fallback method)
+    .OUTPUTS
+        Boolean indicating success
+    #>
+    try {
+        Write-Log "Installing WSL via DISM (Windows Features)..." -Level "INFO"
+        
+        # Enable WSL feature
+        $wslResult = Enable-WindowsOptionalFeature -Online -FeatureName "Microsoft-Windows-Subsystem-Linux" -All -NoRestart
+        
+        # Enable Virtual Machine Platform for WSL2 (if available)
+        try {
+            $vmResult = Enable-WindowsOptionalFeature -Online -FeatureName "VirtualMachinePlatform" -All -NoRestart -ErrorAction SilentlyContinue
+            if ($vmResult.RestartNeeded) {
+                Write-Log "Virtual Machine Platform enabled (WSL2 support)" -Level "SUCCESS"
+            }
+        }
+        catch {
+            Write-Log "Virtual Machine Platform not available or already enabled" -Level "INFO"
+        }
+        
+        if ($wslResult.RestartNeeded) {
+            Write-Log "WSL feature installation completed" -Level "SUCCESS"
+            Write-Log "IMPORTANT: A system restart is required before WSL can be used" -Level "WARN"
+            Write-Log "Please restart your computer and run this script again" -Level "WARN"
+            return $true
+        }
+        else {
+            Write-Log "WSL feature enabled successfully" -Level "SUCCESS"
+            return $true
+        }
+    }
+    catch {
+        Write-Log "Failed to install WSL via DISM: $_" -Level "ERROR"
+        return $false
+    }
+}
+
+function Enable-WSLFeature {
+    <#
+    .SYNOPSIS
+        Enable already installed WSL feature
+    .OUTPUTS
+        Boolean indicating success
+    #>
+    try {
+        Write-Log "Enabling WSL feature..." -Level "INFO"
+        
+        $result = Enable-WindowsOptionalFeature -Online -FeatureName "Microsoft-Windows-Subsystem-Linux" -All -NoRestart
+        
+        if ($result.RestartNeeded) {
+            Write-Log "WSL feature enabled. A restart may be required." -Level "SUCCESS"
+        }
+        else {
+            Write-Log "WSL feature enabled successfully" -Level "SUCCESS"
+        }
+        
+        return $true
+    }
+    catch {
+        Write-Log "Failed to enable WSL feature: $_" -Level "ERROR"
+        return $false
+    }
 }
 
 function Test-IsAdministrator {
@@ -217,35 +397,133 @@ function Install-WSLDistribution {
     Write-Log "Checking for WSL distribution: $DistroName" -Level "INFO"
     
     try {
-        $existingDistros = wsl.exe --list --quiet 2>$null | Where-Object { $_ -ne "" -and $_.Trim() -ne "" }
+        # First, verify WSL is working
+        $wslTest = & wsl.exe --status 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Log "WSL is not ready. Testing basic functionality..." -Level "WARN"
+            
+            # Try a simple command to verify WSL works
+            $wslVersion = & wsl.exe --version 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                throw "WSL is installed but not functioning properly. You may need to restart your computer."
+            }
+        }
         
-        if ($existingDistros -contains $DistroName) {
+        # Check existing distributions
+        $existingDistros = @()
+        try {
+            $distroList = & wsl.exe --list --quiet 2>$null
+            if ($LASTEXITCODE -eq 0 -and $distroList) {
+                $existingDistros = $distroList | Where-Object { $_ -ne "" -and $_.Trim() -ne "" } | ForEach-Object { $_.Trim() }
+            }
+        }
+        catch {
+            Write-Log "Could not list existing distributions, proceeding with installation" -Level "WARN"
+        }
+        
+        # Check if distribution already exists
+        $distroExists = $false
+        foreach ($distro in $existingDistros) {
+            if ($distro -eq $DistroName -or $distro -like "*$DistroName*") {
+                $distroExists = $true
+                break
+            }
+        }
+        
+        if ($distroExists) {
             Write-Log "Distribution '$DistroName' is already installed" -Level "SUCCESS"
             return $true
         }
         
         Write-Log "Installing WSL distribution: $DistroName" -Level "INFO"
+        Write-Log "This may take several minutes..." -Level "INFO"
         
         # Use wsl --install for better compatibility
-        $installProcess = Start-Process -FilePath "wsl.exe" -ArgumentList "--install", "-d", $DistroName -Wait -PassThru -NoNewWindow
+        $installArgs = @("--install", "-d", $DistroName)
+        Write-Log "Executing: wsl.exe $($installArgs -join ' ')" -Level "INFO"
+        
+        $installProcess = Start-Process -FilePath "wsl.exe" -ArgumentList $installArgs -Wait -PassThru -NoNewWindow
         
         if ($installProcess.ExitCode -eq 0) {
-            Write-Log "WSL distribution '$DistroName' installation initiated successfully" -Level "SUCCESS"
-            Write-Log "Please complete the initial setup (username/password) when prompted" -Level "INFO"
+            Write-Log "WSL distribution '$DistroName' installation completed successfully" -Level "SUCCESS"
             
-            # Wait for user to complete setup
-            Write-Host "Press any key after completing the WSL setup..." -ForegroundColor Yellow
-            $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            # Verify installation
+            Start-Sleep -Seconds 3
+            try {
+                $verifyDistros = & wsl.exe --list --quiet 2>$null
+                if ($verifyDistros -and ($verifyDistros -contains $DistroName -or $verifyDistros -like "*$DistroName*")) {
+                    Write-Log "Distribution installation verified successfully" -Level "SUCCESS"
+                }
+                else {
+                    Write-Log "Warning: Could not verify distribution installation" -Level "WARN"
+                }
+            }
+            catch {
+                Write-Log "Warning: Could not verify distribution installation: $_" -Level "WARN"
+            }
             
             return $true
         }
         else {
-            Write-Log "WSL installation failed with exit code: $($installProcess.ExitCode)" -Level "ERROR"
+            Write-Log "WSL distribution installation failed with exit code: $($installProcess.ExitCode)" -Level "ERROR"
+            
+            # Try alternative installation method for older systems
+            Write-Log "Attempting alternative installation method..." -Level "INFO"
+            return Install-WSLDistributionAlternative -DistroName $DistroName
+        }
+    }
+    catch {
+        Write-Log "Error during WSL distribution installation: $_" -Level "ERROR"
+        Write-Log "Attempting alternative installation method..." -Level "INFO"
+        return Install-WSLDistributionAlternative -DistroName $DistroName
+    }
+}
+
+function Install-WSLDistributionAlternative {
+    <#
+    .SYNOPSIS
+        Alternative method to install WSL distribution
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DistroName
+    )
+    
+    try {
+        Write-Log "Using Microsoft Store method for distribution installation..." -Level "INFO"
+        
+        # For Ubuntu, we can try the direct store installation
+        if ($DistroName -eq "Ubuntu" -or $DistroName -like "Ubuntu*") {
+            $storeUrl = "ms-windows-store://pdp/?productid=9PDXGNCFSCZV"  # Ubuntu 22.04 LTS
+            
+            Write-Log "Opening Microsoft Store for Ubuntu installation..." -Level "INFO"
+            Write-Log "Please install Ubuntu from the Microsoft Store and run this script again" -Level "INFO"
+            
+            Start-Process $storeUrl
+            
+            Write-Host "After installing Ubuntu from the Store, press any key to continue..." -ForegroundColor Yellow
+            $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            
+            # Check if installation was successful
+            Start-Sleep -Seconds 2
+            $checkDistros = & wsl.exe --list --quiet 2>$null
+            if ($checkDistros -and ($checkDistros -contains $DistroName -or $checkDistros -like "*Ubuntu*")) {
+                Write-Log "Distribution installation completed via Microsoft Store" -Level "SUCCESS"
+                return $true
+            }
+            else {
+                Write-Log "Distribution not found after Store installation. Please verify the installation." -Level "WARN"
+                return $false
+            }
+        }
+        else {
+            Write-Log "For distribution '$DistroName', please install manually from Microsoft Store or use:" -Level "INFO"
+            Write-Log "wsl --install -d $DistroName" -Level "INFO"
             return $false
         }
     }
     catch {
-        Write-Log "Error during WSL installation: $_" -Level "ERROR"
+        Write-Log "Alternative installation method failed: $_" -Level "ERROR"
         return $false
     }
 }
