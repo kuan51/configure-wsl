@@ -1,0 +1,335 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 2.0.1)'
+        required: true
+        type: string
+
+env:
+  POWERSHELL_TELEMETRY_OPTOUT: 1
+
+jobs:
+  validate-release:
+    name: Validate Release
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Determine Version
+      id: version
+      shell: pwsh
+      run: |
+        if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $version = "${{ github.event.inputs.version }}"
+            $tag = "v$version"
+            Write-Host "Manual release requested for version: $version" -ForegroundColor Green
+        } else {
+            $tag = "${{ github.ref_name }}"
+            $version = $tag -replace '^v', ''
+            Write-Host "Tag-triggered release for: $tag (version: $version)" -ForegroundColor Green
+        }
+        
+        # Validate version format
+        if ($version -notmatch '^\d+\.\d+\.\d+(-[\w\d\-]+)?$') {
+            throw "Invalid version format: $version. Expected format: x.y.z or x.y.z-prerelease"
+        }
+        
+        echo "version=$version" >> $env:GITHUB_OUTPUT
+        echo "tag=$tag" >> $env:GITHUB_OUTPUT
+        
+    - name: Update Module Version
+      shell: pwsh
+      run: |
+        $version = "${{ steps.version.outputs.version }}"
+        $manifestPath = "./src/ConfigureWSL.psd1"
+        
+        Write-Host "Updating module version to: $version" -ForegroundColor Yellow
+        
+        # Read and update manifest
+        $manifestContent = Get-Content $manifestPath -Raw
+        $manifestContent = $manifestContent -replace "ModuleVersion = '[^']+'" , "ModuleVersion = '$version'"
+        
+        # Update release notes with current date
+        $releaseDate = Get-Date -Format "yyyy-MM-dd"
+        $releaseNotes = @"
+## $version ($releaseDate)
+- Release $version
+- See CHANGELOG.md for detailed changes
+"@
+        
+        $manifestContent = $manifestContent -replace "ReleaseNotes = @'[^']+'" , "ReleaseNotes = @'$releaseNotes'"
+        
+        $manifestContent | Set-Content $manifestPath -Encoding UTF8
+        
+        Write-Host "Module manifest updated successfully" -ForegroundColor Green
+        
+    - name: Install Dependencies
+      shell: pwsh
+      run: |
+        Install-Module -Name Pester -Force -SkipPublisherCheck -Scope CurrentUser
+        Install-Module -Name PSScriptAnalyzer -Force -SkipPublisherCheck -Scope CurrentUser
+        
+    - name: Run Tests
+      shell: pwsh
+      run: |
+        Write-Host "Running full test suite for release validation..." -ForegroundColor Yellow
+        
+        New-Item -Path "./TestResults" -ItemType Directory -Force | Out-Null
+        $testResult = & ./tests/Invoke-Tests.ps1 -Coverage -CI -OutputPath "./TestResults"
+        
+        if ($testResult -ne 0) {
+            throw "Tests failed - cannot proceed with release"
+        }
+        
+        Write-Host "All tests passed - release validation successful!" -ForegroundColor Green
+        
+    - name: Upload Release Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-artifacts
+        path: |
+          src/
+          tests/TestResults/
+          LICENSE
+          README.md
+        retention-days: 30
+        
+  create-release:
+    name: Create GitHub Release
+    runs-on: windows-latest
+    needs: validate-release
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Download Artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: release-artifacts
+        path: ./release/
+        
+    - name: Create Release Package
+      shell: pwsh
+      run: |
+        $version = "${{ needs.validate-release.outputs.version }}"
+        Write-Host "Creating release package for version: $version" -ForegroundColor Yellow
+        
+        # Create release directory structure
+        $releaseDir = "./ConfigureWSL-$version"
+        New-Item -Path $releaseDir -ItemType Directory -Force | Out-Null
+        
+        # Copy module files
+        Copy-Item -Path "./src/*" -Destination $releaseDir -Recurse
+        Copy-Item -Path "./LICENSE" -Destination $releaseDir -ErrorAction SilentlyContinue
+        Copy-Item -Path "./README.md" -Destination $releaseDir -ErrorAction SilentlyContinue
+        
+        # Create install script
+        $installScript = @'
+#!/usr/bin/env pwsh
+<#
+.SYNOPSIS
+    Install ConfigureWSL PowerShell Module
+.DESCRIPTION
+    Installs the ConfigureWSL module to the current user's PowerShell modules directory
+#>
+
+param(
+    [Parameter(Mandatory = $false)]
+    [switch]$Force
+)
+
+$ModuleName = "ConfigureWSL"
+$ModulePath = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "PowerShell\Modules\$ModuleName"
+
+try {
+    Write-Host "Installing $ModuleName module..." -ForegroundColor Green
+    
+    # Create module directory
+    if (Test-Path $ModulePath) {
+        if ($Force) {
+            Remove-Item $ModulePath -Recurse -Force
+            Write-Host "Removed existing module installation" -ForegroundColor Yellow
+        } else {
+            throw "Module is already installed. Use -Force to overwrite."
+        }
+    }
+    
+    New-Item -Path $ModulePath -ItemType Directory -Force | Out-Null
+    
+    # Copy module files
+    $sourceFiles = Get-ChildItem -Path $PSScriptRoot -Include "*.psd1", "*.psm1" -File
+    foreach ($file in $sourceFiles) {
+        Copy-Item -Path $file.FullName -Destination $ModulePath
+        Write-Host "Copied: $($file.Name)" -ForegroundColor Gray
+    }
+    
+    Write-Host "Module installed successfully to: $ModulePath" -ForegroundColor Green
+    Write-Host "Import the module using: Import-Module $ModuleName" -ForegroundColor Yellow
+    
+} catch {
+    Write-Error "Installation failed: $_"
+    exit 1
+}
+'@
+        
+        $installScript | Set-Content -Path "$releaseDir/Install.ps1" -Encoding UTF8
+        
+        # Create ZIP archive
+        $archivePath = "./ConfigureWSL-$version.zip"
+        Compress-Archive -Path $releaseDir -DestinationPath $archivePath -Force
+        
+        Write-Host "Release package created: $archivePath" -ForegroundColor Green
+        
+        # Store archive path for next step
+        echo "ARCHIVE_PATH=$archivePath" >> $env:GITHUB_ENV
+        
+    - name: Generate Release Notes
+      id: release_notes
+      shell: pwsh
+      run: |
+        $version = "${{ needs.validate-release.outputs.version }}"
+        
+        # Try to read CHANGELOG.md if it exists
+        $changelogPath = "./CHANGELOG.md"
+        $releaseNotes = "## What's Changed`n`n"
+        
+        if (Test-Path $changelogPath) {
+            $changelog = Get-Content $changelogPath -Raw
+            # Extract notes for current version (basic extraction)
+            if ($changelog -match "## \[$version\].*?(?=## \[|\z)") {
+                $versionNotes = $matches[0] -replace "## \[$version\][^\n]*\n", ""
+                $releaseNotes += $versionNotes.Trim()
+            } else {
+                $releaseNotes += "- Release version $version`n- See commit history for detailed changes"
+            }
+        } else {
+            $releaseNotes += "- Release version $version`n- See commit history for detailed changes"
+        }
+        
+        $releaseNotes += "`n`n## Installation`n`n"
+        $releaseNotes += "### PowerShell Gallery (Recommended)`n"
+        $releaseNotes += "``````powershell`n"
+        $releaseNotes += "Install-Module -Name ConfigureWSL -Force`n"
+        $releaseNotes += "``````n`n"
+        $releaseNotes += "### Manual Installation`n"
+        $releaseNotes += "1. Download the ``ConfigureWSL-$version.zip`` file`n"
+        $releaseNotes += "2. Extract to your PowerShell modules directory`n"
+        $releaseNotes += "3. Run ``Import-Module ConfigureWSL```n`n"
+        $releaseNotes += "### Quick Setup`n"
+        $releaseNotes += "``````powershell`n"
+        $releaseNotes += "# Run as Administrator`n"
+        $releaseNotes += "Install-WSLEnvironment`n"
+        $releaseNotes += "``````n`n"
+        
+        # Save to file for upload
+        $releaseNotes | Set-Content -Path "./release-notes.md" -Encoding UTF8
+        
+        # Also output for GitHub (escape newlines)
+        $escapedNotes = $releaseNotes -replace "`n", "%0A" -replace "`r", "%0D"
+        echo "notes=$escapedNotes" >> $env:GITHUB_OUTPUT
+        
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ needs.validate-release.outputs.tag }}
+        name: ConfigureWSL ${{ needs.validate-release.outputs.version }}
+        body_path: ./release-notes.md
+        files: |
+          ${{ env.ARCHIVE_PATH }}
+        draft: false
+        prerelease: ${{ contains(needs.validate-release.outputs.version, '-') }}
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+  publish-powershell-gallery:
+    name: Publish to PowerShell Gallery
+    runs-on: windows-latest
+    needs: [validate-release, create-release]
+    if: github.repository_owner != 'fork' && !contains(needs.validate-release.outputs.version, '-')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup PowerShell Gallery Publishing
+      shell: pwsh
+      run: |
+        # Note: This requires PSGALLERY_API_KEY secret to be set in repository settings
+        if (-not "${{ secrets.PSGALLERY_API_KEY }}") {
+            Write-Host "PSGALLERY_API_KEY secret not found - skipping PowerShell Gallery publish" -ForegroundColor Yellow
+            echo "SKIP_PUBLISH=true" >> $env:GITHUB_ENV
+            return
+        }
+        
+        Write-Host "PowerShell Gallery API key found - preparing to publish" -ForegroundColor Green
+        
+    - name: Publish to PowerShell Gallery
+      if: env.SKIP_PUBLISH != 'true'
+      shell: pwsh
+      run: |
+        $version = "${{ needs.validate-release.outputs.version }}"
+        Write-Host "Publishing ConfigureWSL version $version to PowerShell Gallery..." -ForegroundColor Green
+        
+        try {
+            # Update module version in manifest
+            $manifestPath = "./src/ConfigureWSL.psd1"
+            $manifestContent = Get-Content $manifestPath -Raw
+            $manifestContent = $manifestContent -replace "ModuleVersion = '[^']+'" , "ModuleVersion = '$version'"
+            $manifestContent | Set-Content $manifestPath -Encoding UTF8
+            
+            # Publish module
+            Publish-Module -Path "./src" -NuGetApiKey "${{ secrets.PSGALLERY_API_KEY }}" -Verbose -Force
+            
+            Write-Host "Successfully published to PowerShell Gallery!" -ForegroundColor Green
+        } catch {
+            Write-Error "Failed to publish to PowerShell Gallery: $_"
+            throw
+        }
+        
+  notify-completion:
+    name: Notify Release Completion
+    runs-on: windows-latest
+    needs: [validate-release, create-release, publish-powershell-gallery]
+    if: always()
+    
+    steps:
+    - name: Release Summary
+      shell: pwsh
+      run: |
+        $version = "${{ needs.validate-release.outputs.version }}"
+        $tag = "${{ needs.validate-release.outputs.tag }}"
+        
+        Write-Host "=== ConfigureWSL Release $version Summary ===" -ForegroundColor Cyan
+        Write-Host "Version: $version" -ForegroundColor Green
+        Write-Host "Tag: $tag" -ForegroundColor Green
+        Write-Host "GitHub Release: ${{ needs.create-release.result }}" -ForegroundColor Green
+        Write-Host "PowerShell Gallery: ${{ needs.publish-powershell-gallery.result }}" -ForegroundColor Green
+        
+        if ("${{ needs.create-release.result }}" -eq "success") {
+            Write-Host "✅ GitHub release created successfully" -ForegroundColor Green
+        } else {
+            Write-Host "❌ GitHub release failed" -ForegroundColor Red
+        }
+        
+        if ("${{ needs.publish-powershell-gallery.result }}" -eq "success") {
+            Write-Host "✅ Published to PowerShell Gallery" -ForegroundColor Green
+        } elseif ("${{ needs.publish-powershell-gallery.result }}" -eq "skipped") {
+            Write-Host "⏩ PowerShell Gallery publish skipped" -ForegroundColor Yellow
+        } else {
+            Write-Host "❌ PowerShell Gallery publish failed" -ForegroundColor Red
+        }
+        
+        Write-Host "`nRelease URL: https://github.com/${{ github.repository }}/releases/tag/$tag" -ForegroundColor Blue

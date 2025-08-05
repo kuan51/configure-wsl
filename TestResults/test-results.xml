@@ -1,0 +1,123 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<test-results xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="nunit_schema_2.5.xsd" name="Pester" total="32" errors="0" failures="8" not-run="0" inconclusive="0" ignored="0" skipped="0" invalid="0" date="2025-08-04" time="23:25:28">
+  <environment user="linde" machine-name="MINDANAO" cwd="F:\Github\configure-wsl" user-domain="MINDANAO" platform="Microsoft Windows 11 Pro|C:\WINDOWS|\Device\Harddisk1\Partition2" nunit-version="2.5.8.0" os-version="10.0.26100" clr-version="4.0.30319.42000" />
+  <culture-info current-culture="en-US" current-uiculture="en-US" />
+  <test-suite type="Powershell" name="Pester" executed="True" result="Failure" success="False" time="14.5519" asserts="0">
+    <results>
+      <test-suite type="TestFixture" name="ConfigureWSL Module Import" executed="True" result="Success" success="True" time="0.3273" asserts="0" description="ConfigureWSL Module Import">
+        <results>
+          <test-case description="Should import the module successfully" name="ConfigureWSL Module Import.Should import the module successfully" time="0.3013" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="Should export all expected functions" name="ConfigureWSL Module Import.Should export all expected functions" time="0.026" asserts="0" success="True" result="Success" executed="True" />
+        </results>
+      </test-suite>
+      <test-suite type="TestFixture" name="ConfigureWSL Logging Functions" executed="True" result="Success" success="True" time="0.1894" asserts="0" description="ConfigureWSL Logging Functions">
+        <results>
+          <test-case description="Should create log file" name="ConfigureWSL Logging Functions.Should create log file" time="0.0391" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="Should create log directory if it doesn't exist" name="ConfigureWSL Logging Functions.Should create log directory if it doesn't exist" time="0.0219" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="Should write initialization message to log" name="ConfigureWSL Logging Functions.Should write initialization message to log" time="0.0192" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="Should write INFO message to log file" name="ConfigureWSL Logging Functions.Should write INFO message to log file" time="0.0233" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="Should write SUCCESS message to log file" name="ConfigureWSL Logging Functions.Should write SUCCESS message to log file" time="0.0228" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="Should write WARN message to log file" name="ConfigureWSL Logging Functions.Should write WARN message to log file" time="0.0223" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="Should include timestamp in log entry" name="ConfigureWSL Logging Functions.Should include timestamp in log entry" time="0.021" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="Should handle empty log path gracefully" name="ConfigureWSL Logging Functions.Should handle empty log path gracefully" time="0.0197" asserts="0" success="True" result="Success" executed="True" />
+        </results>
+      </test-suite>
+      <test-suite type="TestFixture" name="ConfigureWSL Validation Functions" executed="True" result="Success" success="True" time="0.5471" asserts="0" description="ConfigureWSL Validation Functions">
+        <results>
+          <test-case description="Test-WSLInstallation should return PSCustomObject with required properties" name="ConfigureWSL Validation Functions.Test-WSLInstallation should return PSCustomObject with required properties" time="0.0903" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="Test-WSLInstallation should return boolean values for IsInstalled and IsEnabled" name="ConfigureWSL Validation Functions.Test-WSLInstallation should return boolean values for IsInstalled and IsEnabled" time="0.0734" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="Test-WSLInstallation should not throw exceptions" name="ConfigureWSL Validation Functions.Test-WSLInstallation should not throw exceptions" time="0.0713" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="Test-Prerequisites should return boolean value" name="ConfigureWSL Validation Functions.Test-Prerequisites should return boolean value" time="0.1596" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="Test-Prerequisites should not throw exceptions" name="ConfigureWSL Validation Functions.Test-Prerequisites should not throw exceptions" time="0.1524" asserts="0" success="True" result="Success" executed="True" />
+        </results>
+      </test-suite>
+      <test-suite type="TestFixture" name="ConfigureWSL WSL Functions" executed="True" result="Success" success="True" time="9.6327" asserts="0" description="ConfigureWSL WSL Functions">
+        <results>
+          <test-case description="Install-WSLDistribution should accept DistroName parameter" name="ConfigureWSL WSL Functions.Install-WSLDistribution should accept DistroName parameter" time="0.0922" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="Install-WSLDistribution should return boolean value" name="ConfigureWSL WSL Functions.Install-WSLDistribution should return boolean value" time="0.0893" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="Install-StarshipInWSL should accept DistroName parameter" name="ConfigureWSL WSL Functions.Install-StarshipInWSL should accept DistroName parameter" time="5.9637" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="Install-StarshipInWSL should return boolean value" name="ConfigureWSL WSL Functions.Install-StarshipInWSL should return boolean value" time="3.4875" asserts="0" success="True" result="Success" executed="True" />
+        </results>
+      </test-suite>
+      <test-suite type="TestFixture" name="ConfigureWSL Font Functions" executed="True" result="Success" success="True" time="2.4156" asserts="0" description="ConfigureWSL Font Functions">
+        <results>
+          <test-case description="Install-FiraCodeFont should return boolean value" name="ConfigureWSL Font Functions.Install-FiraCodeFont should return boolean value" time="1.3219" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="Install-FiraCodeFont should not throw exceptions during mocked execution" name="ConfigureWSL Font Functions.Install-FiraCodeFont should not throw exceptions during mocked execution" time="1.0937" asserts="0" success="True" result="Success" executed="True" />
+        </results>
+      </test-suite>
+      <test-suite type="TestFixture" name="ConfigureWSL Configuration Functions" executed="True" result="Failure" success="False" time="0.1276" asserts="0" description="ConfigureWSL Configuration Functions">
+        <results>
+          <test-case description="Update-WindowsTerminalConfig should return boolean value" name="ConfigureWSL Configuration Functions.Update-WindowsTerminalConfig should return boolean value" time="0.0415" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="Update-WindowsTerminalConfig should handle missing settings file gracefully" name="ConfigureWSL Configuration Functions.Update-WindowsTerminalConfig should handle missing settings file gracefully" time="0.0305" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: {False}
+But was:  {True}</message>
+              <stack-trace>at line: 280 in F:\Github\configure-wsl\tests\ConfigureWSL.Compatible.Tests.ps1
+280:         $result | Should Be $false</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="Update-VSCodeConfig should return boolean value" name="ConfigureWSL Configuration Functions.Update-VSCodeConfig should return boolean value" time="0.0296" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Error updating VS Code configuration: Exception setting "terminal.integrated.fontFamily": "The property 'terminal.integrated.fontFamily' cannot be found on this object. Verify that the property exists and can be set."</message>
+              <stack-trace>at line: 733 in F:\Github\configure-wsl\src\ConfigureWSL.psm1</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="Update-VSCodeConfig should handle missing settings file gracefully" name="ConfigureWSL Configuration Functions.Update-VSCodeConfig should handle missing settings file gracefully" time="0.0259" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Error updating VS Code configuration: Exception setting "terminal.integrated.fontFamily": "The property 'terminal.integrated.fontFamily' cannot be found on this object. Verify that the property exists and can be set."</message>
+              <stack-trace>at line: 733 in F:\Github\configure-wsl\src\ConfigureWSL.psm1</stack-trace>
+            </failure>
+          </test-case>
+        </results>
+      </test-suite>
+      <test-suite type="TestFixture" name="ConfigureWSL Main Function" executed="True" result="Failure" success="False" time="0.1197" asserts="0" description="ConfigureWSL Main Function">
+        <results>
+          <test-case description="Install-WSLEnvironment should accept all parameters" name="ConfigureWSL Main Function.Install-WSLEnvironment should accept all parameters" time="0.0404" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Expected: the expression not to throw an exception. Message was {Critical error during script execution: This module requires Administrator privileges. Please restart PowerShell as Administrator.}
+    from F:\Github\configure-wsl\src\ConfigureWSL.psm1:872 char:9
+    +         Write-Log "Critical error during script execution: $_" -Level ...
+    +         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~</message>
+              <stack-trace>at line: 309 in F:\Github\configure-wsl\tests\ConfigureWSL.Compatible.Tests.ps1
+309:         { Install-WSLEnvironment -DistroName "Ubuntu" -SkipFontInstall -SkipStarship -LogPath $testLogPath } | Should Not Throw</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="Install-WSLEnvironment should return integer exit code" name="ConfigureWSL Main Function.Install-WSLEnvironment should return integer exit code" time="0.0416" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Could not find Command Test-IsAdministrator</message>
+              <stack-trace>at line: 801 in C:\Program Files\WindowsPowerShell\Modules\Pester\3.4.0\Functions\Mock.ps1</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="Install-WSLEnvironment should return 1 when not running as administrator" name="ConfigureWSL Main Function.Install-WSLEnvironment should return 1 when not running as administrator" time="0.0377" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Could not find Command Test-IsAdministrator</message>
+              <stack-trace>at line: 801 in C:\Program Files\WindowsPowerShell\Modules\Pester\3.4.0\Functions\Mock.ps1</stack-trace>
+            </failure>
+          </test-case>
+        </results>
+      </test-suite>
+      <test-suite type="TestFixture" name="ConfigureWSL Integration Tests" executed="True" result="Failure" success="False" time="0.0877" asserts="0" description="ConfigureWSL Integration Tests">
+        <results>
+          <test-case description="Should handle complete workflow with mocked dependencies" name="ConfigureWSL Integration Tests.Should handle complete workflow with mocked dependencies" time="0.0489" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Could not find Command Test-IsAdministrator</message>
+              <stack-trace>at line: 801 in C:\Program Files\WindowsPowerShell\Modules\Pester\3.4.0\Functions\Mock.ps1</stack-trace>
+            </failure>
+          </test-case>
+          <test-case description="Should handle failures gracefully" name="ConfigureWSL Integration Tests.Should handle failures gracefully" time="0.0388" asserts="0" success="False" result="Failure" executed="True">
+            <failure>
+              <message>Could not find Command Test-IsAdministrator</message>
+              <stack-trace>at line: 801 in C:\Program Files\WindowsPowerShell\Modules\Pester\3.4.0\Functions\Mock.ps1</stack-trace>
+            </failure>
+          </test-case>
+        </results>
+      </test-suite>
+      <test-suite type="TestFixture" name="ConfigureWSL Error Handling Tests" executed="True" result="Success" success="True" time="1.1049" asserts="0" description="ConfigureWSL Error Handling Tests">
+        <results>
+          <test-case description="Should handle file system errors gracefully" name="ConfigureWSL Error Handling Tests.Should handle file system errors gracefully" time="0.0301" asserts="0" success="True" result="Success" executed="True" />
+          <test-case description="Should handle network errors in font installation" name="ConfigureWSL Error Handling Tests.Should handle network errors in font installation" time="1.0748" asserts="0" success="True" result="Success" executed="True" />
+        </results>
+      </test-suite>
+    </results>
+  </test-suite>
+</test-results>

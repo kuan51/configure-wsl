@@ -1,68 +1,28 @@
-<#
-.SYNOPSIS
-    Configure WSL Development Environment
-    
-.DESCRIPTION
-    Sets up Ubuntu WSL, FiraCode Nerd Font, Starship prompt, and configures Windows Terminal & VS Code
-    for an optimal development environment. This script requires Administrator privileges.
-    
-.PARAMETER DistroName
-    The WSL distribution name to install/configure (default: Ubuntu)
-    
-.PARAMETER SkipFontInstall
-    Skip the FiraCode Nerd Font installation step
-    
-.PARAMETER SkipStarship
-    Skip the Starship prompt installation in WSL
-    
-.PARAMETER LogPath
-    Custom path for log file (default: %TEMP%\configure-wsl.log)
-    
-.EXAMPLE
-    .\configure-wsl.ps1
-    Run with default settings
-    
-.EXAMPLE
-    .\configure-wsl.ps1 -DistroName "Ubuntu-22.04" -LogPath "C:\Logs\wsl-setup.log"
-    Run with custom distribution and log path
-    
-.NOTES
-    Author: WSL Configuration Script
-    Version: 2.0
-    Requires: PowerShell 5.1+ and Administrator privileges
-#>
-
-[CmdletBinding()]
-param(
-    [Parameter(Mandatory = $false)]
-    [string]$DistroName = "Ubuntu",
-    
-    [Parameter(Mandatory = $false)]
-    [switch]$SkipFontInstall,
-    
-    [Parameter(Mandatory = $false)]
-    [switch]$SkipStarship,
-    
-    [Parameter(Mandatory = $false)]
-    [string]$LogPath = "$env:TEMP\configure-wsl.log"
-)
-
-#Requires -RunAsAdministrator
+#Requires -Version 5.1
 
 # Set strict error handling
 $ErrorActionPreference = "Stop"
-$ProgressPreference = "SilentlyContinue" # Suppress progress bars for cleaner output
 
-# Global variables
-$script:LogPath = $LogPath
-$script:BackupDirectory = "$env:TEMP\wsl-config-backups-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+# Module-level variables
+$script:ModuleRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$script:LogPath = $null
+$script:BackupDirectory = $null
 
 #region Logging Functions
 function Write-Log {
     <#
     .SYNOPSIS
         Write message to log file and console
+    .DESCRIPTION
+        Writes a timestamped message to both the log file and console with appropriate color coding
+    .PARAMETER Message
+        The message to log
+    .PARAMETER Level
+        The log level (INFO, WARN, ERROR, SUCCESS)
+    .EXAMPLE
+        Write-Log "Starting operation" -Level "INFO"
     #>
+    [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
         [string]$Message,
@@ -76,10 +36,11 @@ function Write-Log {
     $logEntry = "[$timestamp] [$Level] $Message"
     
     try {
-        Add-Content -Path $script:LogPath -Value $logEntry -Encoding UTF8 -ErrorAction SilentlyContinue
+        if ($script:LogPath) {
+            Add-Content -Path $script:LogPath -Value $logEntry -Encoding UTF8 -ErrorAction SilentlyContinue
+        }
     }
     catch {
-        # Fallback if logging fails
         Write-Warning "Failed to write to log file: $_"
     }
     
@@ -95,14 +56,29 @@ function Initialize-Logging {
     <#
     .SYNOPSIS
         Initialize logging system
+    .DESCRIPTION
+        Sets up the logging system with the specified log path
+    .PARAMETER LogPath
+        Path to the log file
+    .EXAMPLE
+        Initialize-Logging -LogPath "C:\Logs\configure-wsl.log"
     #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$LogPath = "$env:TEMP\configure-wsl.log"
+    )
+    
+    $script:LogPath = $LogPath
+    $script:BackupDirectory = "$env:TEMP\wsl-config-backups-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+    
     try {
         $logDir = Split-Path $script:LogPath -Parent
         if (-not (Test-Path $logDir)) {
             New-Item -Path $logDir -ItemType Directory -Force | Out-Null
         }
         
-        $startMessage = "=== WSL Configuration Script Started ==="
+        $startMessage = "=== WSL Configuration Module Started ==="
         Add-Content -Path $script:LogPath -Value $startMessage -Encoding UTF8
         Write-Log "Log file initialized at: $script:LogPath" -Level "INFO"
     }
@@ -114,68 +90,48 @@ function Initialize-Logging {
 #endregion
 
 #region Validation Functions
-function Test-Prerequisites {
+function Test-IsAdministrator {
     <#
     .SYNOPSIS
-        Validate system prerequisites
+        Check if running as Administrator
+    .DESCRIPTION
+        Tests whether the current PowerShell session is running with Administrator privileges
+    .OUTPUTS
+        System.Boolean - True if running as Administrator, False otherwise
+    .EXAMPLE
+        if (Test-IsAdministrator) { Write-Host "Running as Admin" }
     #>
-    Write-Log "Checking system prerequisites..." -Level "INFO"
+    [CmdletBinding()]
+    [OutputType([System.Boolean])]
+    param()
     
-    # Check Windows version
-    $windowsVersion = [System.Environment]::OSVersion.Version
-    if ($windowsVersion.Major -lt 10) {
-        throw "Windows 10 or later is required for WSL"
-    }
-    
-    # Enhanced Windows version check for WSL2
-    $buildNumber = [System.Environment]::OSVersion.Version.Build
-    if ($windowsVersion.Major -eq 10 -and $buildNumber -lt 19041) {
-        Write-Log "Warning: WSL2 requires Windows 10 version 2004 (build 19041) or later. Current build: $buildNumber" -Level "WARN"
-        Write-Log "WSL1 may still work, but WSL2 is recommended for better performance" -Level "WARN"
-    }
-    
-    # Check WSL installation status
-    $wslStatus = Test-WSLInstallation
-    if ($wslStatus.IsInstalled -eq $false) {
-        Write-Log "WSL is not installed. Attempting automatic installation..." -Level "WARN"
-        $installResult = Install-WSLFeature
-        if (-not $installResult) {
-            throw "Failed to install WSL. Please install WSL manually using 'wsl --install' in an elevated PowerShell session."
-        }
-        Write-Log "WSL installation completed. A system restart may be required." -Level "SUCCESS"
-    }
-    elseif ($wslStatus.IsEnabled -eq $false) {
-        Write-Log "WSL feature is installed but not enabled. Attempting to enable..." -Level "WARN"
-        $enableResult = Enable-WSLFeature
-        if (-not $enableResult) {
-            throw "Failed to enable WSL feature. Please enable it manually in Windows Features."
-        }
-    }
-    else {
-        Write-Log "WSL is properly installed and available (Version: $($wslStatus.Version))" -Level "SUCCESS"
-    }
-    
-    # Check internet connectivity
     try {
-        $testConnection = Test-NetConnection -ComputerName "github.com" -Port 443 -InformationLevel Quiet -WarningAction SilentlyContinue
-        if (-not $testConnection) {
-            throw "Internet connectivity required for downloads"
-        }
+        $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($currentUser)
+        return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     }
     catch {
-        Write-Log "Warning: Could not verify internet connectivity" -Level "WARN"
+        Write-Log "Error checking administrator status: $_" -Level "ERROR"
+        return $false
     }
-    
-    Write-Log "Prerequisites check completed successfully" -Level "SUCCESS"
 }
 
 function Test-WSLInstallation {
     <#
     .SYNOPSIS
         Test if WSL is installed and properly configured
+    .DESCRIPTION
+        Checks the WSL installation status and returns detailed information
     .OUTPUTS
         PSCustomObject with IsInstalled, IsEnabled, and Version properties
+    .EXAMPLE
+        $wslStatus = Test-WSLInstallation
+        if ($wslStatus.IsInstalled) { Write-Host "WSL is installed" }
     #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param()
+    
     $result = [PSCustomObject]@{
         IsInstalled = $false
         IsEnabled = $false
@@ -229,117 +185,69 @@ function Test-WSLInstallation {
     return $result
 }
 
-function Install-WSLFeature {
+function Test-Prerequisites {
     <#
     .SYNOPSIS
-        Install WSL using the modern wsl --install command
+        Validate system prerequisites
+    .DESCRIPTION
+        Checks Windows version, WSL availability, and internet connectivity
     .OUTPUTS
-        Boolean indicating success
+        System.Boolean - True if prerequisites are met
+    .EXAMPLE
+        if (Test-Prerequisites) { Write-Host "System ready" }
     #>
-    Write-Log "Installing WSL feature..." -Level "INFO"
+    [CmdletBinding()]
+    [OutputType([System.Boolean])]
+    param()
+    
+    Write-Log "Checking system prerequisites..." -Level "INFO"
     
     try {
-        # Use the modern wsl --install command (Windows 10 2004+)
-        $installProcess = Start-Process -FilePath "wsl.exe" -ArgumentList "--install", "--no-distribution" -Wait -PassThru -NoNewWindow -Verb RunAs
+        # Check Windows version
+        $windowsVersion = [System.Environment]::OSVersion.Version
+        if ($windowsVersion.Major -lt 10) {
+            throw "Windows 10 or later is required for WSL"
+        }
         
-        if ($installProcess.ExitCode -eq 0) {
-            Write-Log "WSL installation completed successfully" -Level "SUCCESS"
-            Write-Log "Note: A system restart may be required before WSL can be used" -Level "INFO"
-            return $true
+        # Enhanced Windows version check for WSL2
+        $buildNumber = [System.Environment]::OSVersion.Version.Build
+        if ($windowsVersion.Major -eq 10 -and $buildNumber -lt 19041) {
+            Write-Log "Warning: WSL2 requires Windows 10 version 2004 (build 19041) or later. Current build: $buildNumber" -Level "WARN"
+            Write-Log "WSL1 may still work, but WSL2 is recommended for better performance" -Level "WARN"
+        }
+        
+        # Check WSL installation status
+        $wslStatus = Test-WSLInstallation
+        if ($wslStatus.IsInstalled -eq $false) {
+            Write-Log "WSL is not installed. Manual installation required." -Level "WARN"
+            return $false
+        }
+        elseif ($wslStatus.IsEnabled -eq $false) {
+            Write-Log "WSL feature is installed but not enabled. Manual enablement required." -Level "WARN"
+            return $false
         }
         else {
-            Write-Log "WSL installation failed with exit code: $($installProcess.ExitCode)" -Level "ERROR"
-            
-            # Fallback: Try enabling WSL feature via DISM
-            Write-Log "Attempting fallback installation via DISM..." -Level "INFO"
-            return Install-WSLFeatureViaDISM
+            Write-Log "WSL is properly installed and available (Version: $($wslStatus.Version))" -Level "SUCCESS"
         }
-    }
-    catch {
-        Write-Log "Error during WSL installation: $_" -Level "ERROR"
         
-        # Fallback: Try enabling WSL feature via DISM
-        Write-Log "Attempting fallback installation via DISM..." -Level "INFO"
-        return Install-WSLFeatureViaDISM
-    }
-}
-
-function Install-WSLFeatureViaDISM {
-    <#
-    .SYNOPSIS
-        Install WSL using DISM (fallback method)
-    .OUTPUTS
-        Boolean indicating success
-    #>
-    try {
-        Write-Log "Installing WSL via DISM (Windows Features)..." -Level "INFO"
-        
-        # Enable WSL feature
-        $wslResult = Enable-WindowsOptionalFeature -Online -FeatureName "Microsoft-Windows-Subsystem-Linux" -All -NoRestart
-        
-        # Enable Virtual Machine Platform for WSL2 (if available)
+        # Check internet connectivity
         try {
-            $vmResult = Enable-WindowsOptionalFeature -Online -FeatureName "VirtualMachinePlatform" -All -NoRestart -ErrorAction SilentlyContinue
-            if ($vmResult.RestartNeeded) {
-                Write-Log "Virtual Machine Platform enabled (WSL2 support)" -Level "SUCCESS"
+            $testConnection = Test-NetConnection -ComputerName "github.com" -Port 443 -InformationLevel Quiet -WarningAction SilentlyContinue
+            if (-not $testConnection) {
+                Write-Log "Warning: Internet connectivity test failed" -Level "WARN"
             }
         }
         catch {
-            Write-Log "Virtual Machine Platform not available or already enabled" -Level "INFO"
+            Write-Log "Warning: Could not verify internet connectivity" -Level "WARN"
         }
         
-        if ($wslResult.RestartNeeded) {
-            Write-Log "WSL feature installation completed" -Level "SUCCESS"
-            Write-Log "IMPORTANT: A system restart is required before WSL can be used" -Level "WARN"
-            Write-Log "Please restart your computer and run this script again" -Level "WARN"
-            return $true
-        }
-        else {
-            Write-Log "WSL feature enabled successfully" -Level "SUCCESS"
-            return $true
-        }
-    }
-    catch {
-        Write-Log "Failed to install WSL via DISM: $_" -Level "ERROR"
-        return $false
-    }
-}
-
-function Enable-WSLFeature {
-    <#
-    .SYNOPSIS
-        Enable already installed WSL feature
-    .OUTPUTS
-        Boolean indicating success
-    #>
-    try {
-        Write-Log "Enabling WSL feature..." -Level "INFO"
-        
-        $result = Enable-WindowsOptionalFeature -Online -FeatureName "Microsoft-Windows-Subsystem-Linux" -All -NoRestart
-        
-        if ($result.RestartNeeded) {
-            Write-Log "WSL feature enabled. A restart may be required." -Level "SUCCESS"
-        }
-        else {
-            Write-Log "WSL feature enabled successfully" -Level "SUCCESS"
-        }
-        
+        Write-Log "Prerequisites check completed successfully" -Level "SUCCESS"
         return $true
     }
     catch {
-        Write-Log "Failed to enable WSL feature: $_" -Level "ERROR"
+        Write-Log "Prerequisites check failed: $_" -Level "ERROR"
         return $false
     }
-}
-
-function Test-IsAdministrator {
-    <#
-    .SYNOPSIS
-        Check if running as Administrator
-    #>
-    $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($currentUser)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 #endregion
 
@@ -348,7 +256,19 @@ function New-ConfigurationBackup {
     <#
     .SYNOPSIS
         Create backup of configuration files before modification
+    .DESCRIPTION
+        Creates a backup copy of the specified file in the backup directory
+    .PARAMETER FilePath
+        Path to the file to backup
+    .PARAMETER BackupName
+        Optional custom name for the backup file
+    .OUTPUTS
+        System.String - Path to the backup file, or $null if backup failed
+    .EXAMPLE
+        $backup = New-ConfigurationBackup -FilePath "C:\config.json"
     #>
+    [CmdletBinding()]
+    [OutputType([System.String])]
     param(
         [Parameter(Mandatory = $true)]
         [string]$FilePath,
@@ -388,7 +308,17 @@ function Install-WSLDistribution {
     <#
     .SYNOPSIS
         Install WSL distribution if not present
+    .DESCRIPTION
+        Installs the specified WSL distribution using modern WSL commands
+    .PARAMETER DistroName
+        Name of the WSL distribution to install
+    .OUTPUTS
+        System.Boolean - True if installation succeeded
+    .EXAMPLE
+        Install-WSLDistribution -DistroName "Ubuntu"
     #>
+    [CmdletBinding()]
+    [OutputType([System.Boolean])]
     param(
         [Parameter(Mandatory = $true)]
         [string]$DistroName
@@ -438,7 +368,7 @@ function Install-WSLDistribution {
         Write-Log "Installing WSL distribution: $DistroName" -Level "INFO"
         Write-Log "This may take several minutes..." -Level "INFO"
         
-        # Use wsl --install with --no-launch for automation (prevents interactive setup)
+        # Use wsl --install with --no-launch for automation
         $installArgs = @("--install", "-d", $DistroName, "--no-launch")
         Write-Log "Executing: wsl.exe $($installArgs -join ' ')" -Level "INFO"
         
@@ -446,125 +376,15 @@ function Install-WSLDistribution {
         
         if ($installProcess.ExitCode -eq 0) {
             Write-Log "WSL distribution '$DistroName' installation completed successfully" -Level "SUCCESS"
-            
-            # Wait for installation to complete
-            Start-Sleep -Seconds 5
-            
-            # Initialize the distribution with automated setup
-            Write-Log "Initializing distribution with automated setup..." -Level "INFO"
-            try {
-                # First, set up default user to avoid interactive prompts
-                Write-Log "Setting up default user configuration..." -Level "INFO"
-                $userSetupResult = & wsl.exe -d $DistroName --user root bash -c "useradd -m -s /bin/bash wsluser && echo 'wsluser:wsluser' | chpasswd && usermod -aG sudo wsluser" 2>$null
-                
-                # Set default user for this distribution
-                & wsl.exe -d $DistroName --set-default-user wsluser 2>$null
-                
-                # Create a temporary script for automated initial setup
-                $setupScript = @'
-#!/bin/bash
-# Automated WSL distribution setup
-echo "Setting up WSL distribution..."
-
-# Update package lists (suppress interactive prompts)
-export DEBIAN_FRONTEND=noninteractive
-sudo apt-get update -qq
-
-# Install essential packages
-sudo apt-get install -y curl wget git unzip
-
-echo "WSL distribution setup completed"
-'@
-                
-                # Run the setup in WSL with the default user
-                $setupResult = $setupScript | & wsl.exe -d $DistroName --user wsluser bash
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Log "Distribution initialized successfully" -Level "SUCCESS"
-                }
-                else {
-                    Write-Log "Warning: Distribution initialization had issues but continuing" -Level "WARN"
-                }
-            }
-            catch {
-                Write-Log "Warning: Could not run automated setup: $_" -Level "WARN"
-            }
-            
-            # Verify installation
-            try {
-                $verifyDistros = & wsl.exe --list --quiet 2>$null
-                if ($verifyDistros -and ($verifyDistros -contains $DistroName -or $verifyDistros -like "*$DistroName*")) {
-                    Write-Log "Distribution installation verified successfully" -Level "SUCCESS"
-                }
-                else {
-                    Write-Log "Warning: Could not verify distribution installation" -Level "WARN"
-                }
-            }
-            catch {
-                Write-Log "Warning: Could not verify distribution installation: $_" -Level "WARN"
-            }
-            
             return $true
         }
         else {
             Write-Log "WSL distribution installation failed with exit code: $($installProcess.ExitCode)" -Level "ERROR"
-            
-            # Try alternative installation method for older systems
-            Write-Log "Attempting alternative installation method..." -Level "INFO"
-            return Install-WSLDistributionAlternative -DistroName $DistroName
-        }
-    }
-    catch {
-        Write-Log "Error during WSL distribution installation: $_" -Level "ERROR"
-        Write-Log "Attempting alternative installation method..." -Level "INFO"
-        return Install-WSLDistributionAlternative -DistroName $DistroName
-    }
-}
-
-function Install-WSLDistributionAlternative {
-    <#
-    .SYNOPSIS
-        Alternative method to install WSL distribution
-    #>
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$DistroName
-    )
-    
-    try {
-        Write-Log "Using Microsoft Store method for distribution installation..." -Level "INFO"
-        
-        # For Ubuntu, we can try the direct store installation
-        if ($DistroName -eq "Ubuntu" -or $DistroName -like "Ubuntu*") {
-            $storeUrl = "ms-windows-store://pdp/?productid=9PDXGNCFSCZV"  # Ubuntu 22.04 LTS
-            
-            Write-Log "Opening Microsoft Store for Ubuntu installation..." -Level "INFO"
-            Write-Log "Please install Ubuntu from the Microsoft Store and run this script again" -Level "INFO"
-            
-            Start-Process $storeUrl
-            
-            Write-Host "After installing Ubuntu from the Store, press any key to continue..." -ForegroundColor Yellow
-            $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-            
-            # Check if installation was successful
-            Start-Sleep -Seconds 2
-            $checkDistros = & wsl.exe --list --quiet 2>$null
-            if ($checkDistros -and ($checkDistros -contains $DistroName -or $checkDistros -like "*Ubuntu*")) {
-                Write-Log "Distribution installation completed via Microsoft Store" -Level "SUCCESS"
-                return $true
-            }
-            else {
-                Write-Log "Distribution not found after Store installation. Please verify the installation." -Level "WARN"
-                return $false
-            }
-        }
-        else {
-            Write-Log "For distribution '$DistroName', please install manually from Microsoft Store or use:" -Level "INFO"
-            Write-Log "wsl --install -d $DistroName" -Level "INFO"
             return $false
         }
     }
     catch {
-        Write-Log "Alternative installation method failed: $_" -Level "ERROR"
+        Write-Log "Error during WSL distribution installation: $_" -Level "ERROR"
         return $false
     }
 }
@@ -573,7 +393,17 @@ function Install-StarshipInWSL {
     <#
     .SYNOPSIS
         Install Starship prompt in WSL
+    .DESCRIPTION
+        Installs and configures Starship prompt in the specified WSL distribution
+    .PARAMETER DistroName
+        Name of the WSL distribution to configure
+    .OUTPUTS
+        System.Boolean - True if installation succeeded
+    .EXAMPLE
+        Install-StarshipInWSL -DistroName "Ubuntu"
     #>
+    [CmdletBinding()]
+    [OutputType([System.Boolean])]
     param(
         [Parameter(Mandatory = $true)]
         [string]$DistroName
@@ -617,7 +447,7 @@ echo "Starship installation completed successfully"
 '@
     
     try {
-        # Create script in WSL-accessible location using base64 encoding to avoid quoting issues
+        # Create script in WSL-accessible location using base64 encoding
         $wslTempPath = "/tmp/starship-install-$(Get-Date -Format 'yyyyMMdd-HHmmss').sh"
         
         # Encode script content to base64 to safely transfer to WSL
@@ -633,9 +463,9 @@ echo "Starship installation completed successfully"
             throw "Failed to create installation script in WSL"
         }
         
-        # Execute the script within WSL with the default user
+        # Execute the script within WSL
         Write-Log "Executing Starship installation script..." -Level "INFO"
-        $wslProcess = Start-Process -FilePath "wsl.exe" -ArgumentList "-d", $DistroName, "--user", "wsluser", "bash", $wslTempPath -Wait -PassThru -NoNewWindow
+        $wslProcess = Start-Process -FilePath "wsl.exe" -ArgumentList "-d", $DistroName, "bash", $wslTempPath -Wait -PassThru -NoNewWindow
         
         # Clean up the script file in WSL
         & wsl.exe -d $DistroName rm -f $wslTempPath 2>$null
@@ -660,8 +490,18 @@ echo "Starship installation completed successfully"
 function Install-FiraCodeFont {
     <#
     .SYNOPSIS
-        Install FiraCode Nerd Font with modern approach and cleanup
+        Install FiraCode Nerd Font
+    .DESCRIPTION
+        Downloads and installs FiraCode Nerd Font for use in terminals and editors
+    .OUTPUTS
+        System.Boolean - True if installation succeeded
+    .EXAMPLE
+        Install-FiraCodeFont
     #>
+    [CmdletBinding()]
+    [OutputType([System.Boolean])]
+    param()
+    
     Write-Log "Installing FiraCode Nerd Font" -Level "INFO"
     
     # Load required assemblies for font operations
@@ -703,38 +543,22 @@ function Install-FiraCodeFont {
                 $destinationPath = Join-Path $fontsDirectory $fontFile.Name
                 
                 if (-not (Test-Path $destinationPath)) {
-                    # Try to use font validation if System.Drawing is available
-                    $fontValid = $true
+                    # Copy font to system fonts directory
+                    Copy-Item -Path $fontFile.FullName -Destination $destinationPath -Force
+                    
+                    # Register font with Windows (for better compatibility)
                     try {
-                        if ([System.Type]::GetType("System.Drawing.Text.PrivateFontCollection")) {
-                            $fontBytes = [System.IO.File]::ReadAllBytes($fontFile.FullName)
-                            $fontCollection = New-Object System.Drawing.Text.PrivateFontCollection
-                            $fontCollection.AddMemoryFont($fontBytes, $fontBytes.Length)
-                            $fontCollection.Dispose()
-                        }
+                        $shell = New-Object -ComObject Shell.Application
+                        $fontsFolder = $shell.Namespace(0x14)  # Fonts folder
+                        $fontsFolder.CopyHere($fontFile.FullName, 0x10)  # Don't show progress
                     }
                     catch {
-                        Write-Log "Font validation skipped for $($fontFile.Name): $_" -Level "INFO"
+                        # Fallback: Just copy the file (already done above)
+                        Write-Log "Used fallback font installation for $($fontFile.Name)" -Level "INFO"
                     }
                     
-                    if ($fontValid) {
-                        # Copy font to system fonts directory
-                        Copy-Item -Path $fontFile.FullName -Destination $destinationPath -Force
-                        
-                        # Register font with Windows (for better compatibility)
-                        try {
-                            $shell = New-Object -ComObject Shell.Application
-                            $fontsFolder = $shell.Namespace(0x14)  # Fonts folder
-                            $fontsFolder.CopyHere($fontFile.FullName, 0x10)  # Don't show progress
-                        }
-                        catch {
-                            # Fallback: Just copy the file (already done above)
-                            Write-Log "Used fallback font installation for $($fontFile.Name)" -Level "INFO"
-                        }
-                        
-                        Write-Log "Installed font: $($fontFile.Name)" -Level "SUCCESS"
-                        $installedCount++
-                    }
+                    Write-Log "Installed font: $($fontFile.Name)" -Level "SUCCESS"
+                    $installedCount++
                 }
                 else {
                     Write-Log "Font already exists: $($fontFile.Name)" -Level "INFO"
@@ -774,7 +598,17 @@ function Update-WindowsTerminalConfig {
     <#
     .SYNOPSIS
         Configure Windows Terminal to use FiraCode Nerd Font
+    .DESCRIPTION
+        Updates Windows Terminal settings to use FiraCode Nerd Font
+    .OUTPUTS
+        System.Boolean - True if configuration succeeded
+    .EXAMPLE
+        Update-WindowsTerminalConfig
     #>
+    [CmdletBinding()]
+    [OutputType([System.Boolean])]
+    param()
+    
     Write-Log "Configuring Windows Terminal font settings" -Level "INFO"
     
     $settingsPath = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
@@ -841,7 +675,17 @@ function Update-VSCodeConfig {
     <#
     .SYNOPSIS
         Configure VS Code to use FiraCode Nerd Font
+    .DESCRIPTION
+        Updates VS Code settings to use FiraCode Nerd Font
+    .OUTPUTS
+        System.Boolean - True if configuration succeeded
+    .EXAMPLE
+        Update-VSCodeConfig
     #>
+    [CmdletBinding()]
+    [OutputType([System.Boolean])]
+    param()
+    
     Write-Log "Configuring VS Code font settings" -Level "INFO"
     
     $possiblePaths = @(
@@ -903,21 +747,64 @@ function Update-VSCodeConfig {
 }
 #endregion
 
-#region Main Script
-function Main {
+#region Main Function
+function Install-WSLEnvironment {
     <#
     .SYNOPSIS
-        Main script execution function
+        Main function to install and configure WSL development environment
+    .DESCRIPTION
+        Orchestrates the complete WSL development environment setup including distribution installation,
+        font installation, Starship prompt setup, and application configuration
+    .PARAMETER DistroName
+        The WSL distribution name to install/configure (default: Ubuntu)
+    .PARAMETER SkipFontInstall
+        Skip the FiraCode Nerd Font installation step
+    .PARAMETER SkipStarship
+        Skip the Starship prompt installation in WSL
+    .PARAMETER LogPath
+        Custom path for log file (default: %TEMP%\configure-wsl.log)
+    .OUTPUTS
+        System.Int32 - Exit code (0 for success, 1 for failure)
+    .EXAMPLE
+        Install-WSLEnvironment
+    .EXAMPLE
+        Install-WSLEnvironment -DistroName "Ubuntu-22.04" -LogPath "C:\Logs\wsl-setup.log"
     #>
+    [CmdletBinding()]
+    [OutputType([System.Int32])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$DistroName = "Ubuntu",
+        
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipFontInstall,
+        
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipStarship,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$LogPath = "$env:TEMP\configure-wsl.log"
+    )
+    
     try {
         # Initialize logging
-        Initialize-Logging
+        Initialize-Logging -LogPath $LogPath
+        
+        # Check administrator privileges
+        if (-not (Test-IsAdministrator)) {
+            Write-Log "This module requires Administrator privileges. Please restart PowerShell as Administrator." -Level "ERROR"
+            return 1
+        }
         
         Write-Log "Starting WSL Development Environment Configuration" -Level "INFO"
         Write-Log "Parameters: DistroName=$DistroName, SkipFontInstall=$SkipFontInstall, SkipStarship=$SkipStarship" -Level "INFO"
         
         # Validate prerequisites
-        Test-Prerequisites
+        $prereqsResult = Test-Prerequisites
+        if (-not $prereqsResult) {
+            Write-Log "Prerequisites check failed. Please resolve the issues and try again." -Level "ERROR"
+            return 1
+        }
         
         # Step 1: Install WSL Distribution
         Write-Log "=== Step 1: WSL Distribution Setup ===" -Level "INFO"
@@ -987,14 +874,19 @@ function Main {
         return 1
     }
 }
-
-# Script entry point
-if (-not (Test-IsAdministrator)) {
-    Write-Error "This script must be run as Administrator. Please restart PowerShell as Administrator and try again."
-    exit 1
-}
-
-# Execute main function
-$exitCode = Main
-exit $exitCode
 #endregion
+
+# Export module functions
+Export-ModuleMember -Function @(
+    'Install-WSLEnvironment',
+    'Test-WSLInstallation',
+    'Install-WSLDistribution',
+    'Install-FiraCodeFont',
+    'Install-StarshipInWSL',
+    'Update-WindowsTerminalConfig',
+    'Update-VSCodeConfig',
+    'Test-Prerequisites',
+    'Test-IsAdministrator',
+    'Write-Log',
+    'Initialize-Logging'
+)

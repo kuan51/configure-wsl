@@ -1,0 +1,329 @@
+name: Code Quality
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  schedule:
+    # Run weekly on Sundays at 6 AM UTC
+    - cron: '0 6 * * 0'
+  workflow_dispatch:
+
+env:
+  POWERSHELL_TELEMETRY_OPTOUT: 1
+
+jobs:
+  powershell-analysis:
+    name: PowerShell Script Analysis
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install PSScriptAnalyzer
+      shell: pwsh
+      run: |
+        Install-Module -Name PSScriptAnalyzer -Force -SkipPublisherCheck -Scope CurrentUser
+        $version = (Get-Module -Name PSScriptAnalyzer -ListAvailable).Version
+        Write-Host "PSScriptAnalyzer version: $version" -ForegroundColor Green
+        
+    - name: Run PSScriptAnalyzer with Custom Rules
+      shell: pwsh
+      run: |
+        Write-Host "Running comprehensive PSScriptAnalyzer analysis..." -ForegroundColor Yellow
+        
+        $scriptFiles = Get-ChildItem -Path . -Include "*.ps1", "*.psm1", "*.psd1" -Recurse | Where-Object {
+            $_.FullName -notlike "*\.git\*" -and 
+            $_.FullName -notlike "*\node_modules\*"
+        }
+        
+        $allResults = @()
+        
+        foreach ($file in $scriptFiles) {
+            Write-Host "Analyzing: $($file.Name)" -ForegroundColor Gray
+            
+            # Run with all built-in rules
+            $results = Invoke-ScriptAnalyzer -Path $file.FullName -IncludeDefaultRules -Severity Information
+            
+            if ($results) {
+                $allResults += $results
+                
+                # Group by severity
+                $errors = $results | Where-Object { $_.Severity -eq 'Error' }
+                $warnings = $results | Where-Object { $_.Severity -eq 'Warning' }
+                $information = $results | Where-Object { $_.Severity -eq 'Information' }
+                
+                if ($errors) {
+                    Write-Host "  Errors: $($errors.Count)" -ForegroundColor Red
+                    $errors | ForEach-Object {
+                        Write-Host "    Line $($_.Line): $($_.Message)" -ForegroundColor Red
+                    }
+                }
+                
+                if ($warnings) {
+                    Write-Host "  Warnings: $($warnings.Count)" -ForegroundColor Yellow
+                    $warnings | ForEach-Object {
+                        Write-Host "    Line $($_.Line): $($_.Message)" -ForegroundColor Yellow
+                    }
+                }
+                
+                if ($information) {
+                    Write-Host "  Information: $($information.Count)" -ForegroundColor Cyan
+                }
+            }
+        }
+        
+        # Generate summary report
+        $errorCount = ($allResults | Where-Object { $_.Severity -eq 'Error' }).Count
+        $warningCount = ($allResults | Where-Object { $_.Severity -eq 'Warning' }).Count
+        $infoCount = ($allResults | Where-Object { $_.Severity -eq 'Information' }).Count
+        
+        Write-Host "`n=== PSScriptAnalyzer Summary ===" -ForegroundColor Cyan
+        Write-Host "Files analyzed: $($scriptFiles.Count)" -ForegroundColor Green
+        Write-Host "Total issues: $($allResults.Count)" -ForegroundColor White
+        Write-Host "  Errors: $errorCount" -ForegroundColor Red
+        Write-Host "  Warnings: $warningCount" -ForegroundColor Yellow
+        Write-Host "  Information: $infoCount" -ForegroundColor Cyan
+        
+        # Create detailed report
+        $reportPath = "./pssa-report.json"
+        $allResults | ConvertTo-Json -Depth 5 | Set-Content $reportPath
+        
+        # Fail on errors
+        if ($errorCount -gt 0) {
+            throw "PSScriptAnalyzer found $errorCount error(s). Please fix them before continuing."
+        }
+        
+        Write-Host "PSScriptAnalyzer analysis completed successfully!" -ForegroundColor Green
+        
+    - name: Upload Analysis Report
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: pssa-analysis-report
+        path: pssa-report.json
+        retention-days: 30
+        
+  code-metrics:
+    name: Code Metrics & Complexity
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Calculate Code Metrics
+      shell: pwsh
+      run: |
+        Write-Host "Calculating code metrics..." -ForegroundColor Yellow
+        
+        $scriptFiles = Get-ChildItem -Path . -Include "*.ps1", "*.psm1" -Recurse | Where-Object {
+            $_.FullName -notlike "*\.git\*" -and 
+            $_.FullName -notlike "*\tests\*"
+        }
+        
+        $totalLines = 0
+        $totalFunctions = 0
+        $totalComplexity = 0
+        $fileMetrics = @()
+        
+        foreach ($file in $scriptFiles) {
+            $content = Get-Content $file.FullName
+            $lineCount = $content.Count
+            $totalLines += $lineCount
+            
+            # Parse AST to count functions and complexity
+            try {
+                $ast = [System.Management.Automation.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
+                $functions = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
+                $functionCount = $functions.Count
+                $totalFunctions += $functionCount
+                
+                # Calculate cyclomatic complexity (basic approximation)
+                $complexity = 0
+                $complexityKeywords = @('if', 'elseif', 'while', 'for', 'foreach', 'switch', 'catch', 'trap')
+                foreach ($keyword in $complexityKeywords) {
+                    $complexity += ($content | Select-String -Pattern "\b$keyword\b" -AllMatches).Matches.Count
+                }
+                $totalComplexity += $complexity
+                
+                $fileMetrics += [PSCustomObject]@{
+                    File = $file.Name
+                    Lines = $lineCount
+                    Functions = $functionCount
+                    Complexity = $complexity
+                    ComplexityPerFunction = if ($functionCount -gt 0) { [math]::Round($complexity / $functionCount, 2) } else { 0 }
+                }
+            } catch {
+                Write-Warning "Failed to analyze $($file.Name): $_"
+            }
+        }
+        
+        # Display metrics
+        Write-Host "`n=== Code Metrics Summary ===" -ForegroundColor Cyan
+        Write-Host "Total files: $($scriptFiles.Count)" -ForegroundColor Green
+        Write-Host "Total lines: $totalLines" -ForegroundColor Green
+        Write-Host "Total functions: $totalFunctions" -ForegroundColor Green
+        Write-Host "Total complexity: $totalComplexity" -ForegroundColor Green
+        Write-Host "Average complexity per function: $([math]::Round($totalComplexity / $totalFunctions, 2))" -ForegroundColor Green
+        
+        Write-Host "`n=== File Details ===" -ForegroundColor Cyan
+        $fileMetrics | Sort-Object Complexity -Descending | ForEach-Object {
+            $complexityColor = switch ($_.ComplexityPerFunction) {
+                { $_ -le 5 } { 'Green' }
+                { $_ -le 10 } { 'Yellow' }
+                default { 'Red' }
+            }
+            Write-Host "$($_.File): $($_.Lines) lines, $($_.Functions) functions, complexity $($_.Complexity) ($($_.ComplexityPerFunction) per function)" -ForegroundColor $complexityColor
+        }
+        
+        # Save metrics report
+        $metricsReport = @{
+            Summary = @{
+                TotalFiles = $scriptFiles.Count
+                TotalLines = $totalLines
+                TotalFunctions = $totalFunctions
+                TotalComplexity = $totalComplexity
+                AverageComplexityPerFunction = [math]::Round($totalComplexity / $totalFunctions, 2)
+            }
+            FileMetrics = $fileMetrics
+        }
+        
+        $metricsReport | ConvertTo-Json -Depth 3 | Set-Content "./code-metrics.json"
+        
+    - name: Upload Metrics Report
+      uses: actions/upload-artifact@v4
+      with:
+        name: code-metrics-report
+        path: code-metrics.json
+        retention-days: 30
+        
+  documentation-check:
+    name: Documentation Quality Check
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Check Function Documentation
+      shell: pwsh
+      run: |
+        Write-Host "Checking function documentation..." -ForegroundColor Yellow
+        
+        $scriptFiles = Get-ChildItem -Path "./src" -Include "*.ps1", "*.psm1" -Recurse
+        $documentationIssues = @()
+        
+        foreach ($file in $scriptFiles) {
+            try {
+                $ast = [System.Management.Automation.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
+                $functions = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
+                
+                foreach ($function in $functions) {
+                    $functionName = $function.Name
+                    $hasComment = $false
+                    $hasParameters = $false
+                    $hasExamples = $false
+                    
+                    # Check for comment-based help
+                    $helpComment = $function.GetHelpContent()
+                    if ($helpComment) {
+                        $hasComment = $true
+                        if ($helpComment.Description) { $hasParameters = $true }
+                        if ($helpComment.Examples) { $hasExamples = $true }
+                    }
+                    
+                    # Alternative: look for comment blocks before function
+                    $functionStartLine = $function.Extent.StartLineNumber
+                    $fileContent = Get-Content $file.FullName
+                    
+                    # Look for comment blocks in the 20 lines before the function
+                    $searchStart = [math]::Max(0, $functionStartLine - 20)
+                    $searchEnd = $functionStartLine - 1
+                    
+                    if ($searchEnd -ge $searchStart) {
+                        $precedingLines = $fileContent[$searchStart..$searchEnd]
+                        $commentBlock = $precedingLines -join "`n"
+                        
+                        if ($commentBlock -match '\.SYNOPSIS|\.DESCRIPTION') {
+                            $hasComment = $true
+                        }
+                        if ($commentBlock -match '\.PARAMETER') {
+                            $hasParameters = $true
+                        }
+                        if ($commentBlock -match '\.EXAMPLE') {
+                            $hasExamples = $true
+                        }
+                    }
+                    
+                    # Report issues
+                    if (-not $hasComment) {
+                        $documentationIssues += "Missing documentation: $functionName in $($file.Name)"
+                    } elseif (-not $hasParameters -and $function.Parameters.Count -gt 0) {
+                        $documentationIssues += "Missing parameter documentation: $functionName in $($file.Name)"
+                    } elseif (-not $hasExamples) {
+                        $documentationIssues += "Missing examples: $functionName in $($file.Name)"
+                    }
+                }
+            } catch {
+                Write-Warning "Error checking documentation in $($file.Name): $_"
+            }
+        }
+        
+        # Report results
+        if ($documentationIssues) {
+            Write-Host "`nDocumentation issues found:" -ForegroundColor Yellow
+            $documentationIssues | ForEach-Object {
+                Write-Host "  $_" -ForegroundColor Yellow
+            }
+            Write-Host "`nConsider improving documentation quality for better maintainability." -ForegroundColor Yellow
+        } else {
+            Write-Host "All functions have adequate documentation!" -ForegroundColor Green
+        }
+        
+    - name: Check README and Documentation Files
+      shell: pwsh
+      run: |
+        Write-Host "Checking documentation files..." -ForegroundColor Yellow
+        
+        $requiredFiles = @("README.md", "LICENSE")
+        $missingFiles = @()
+        $issues = @()
+        
+        foreach ($file in $requiredFiles) {
+            if (-not (Test-Path $file)) {
+                $missingFiles += $file
+            }
+        }
+        
+        if ($missingFiles) {
+            $issues += "Missing required files: $($missingFiles -join ', ')"
+        }
+        
+        # Check README content
+        if (Test-Path "README.md") {
+            $readmeContent = Get-Content "README.md" -Raw
+            $readmeLength = $readmeContent.Length
+            
+            if ($readmeLength -lt 500) {
+                $issues += "README.md is very short ($readmeLength characters) - consider adding more details"
+            }
+            
+            $requiredSections = @("installation", "usage", "example")
+            foreach ($section in $requiredSections) {
+                if ($readmeContent -notmatch $section) {
+                    $issues += "README.md missing '$section' section"
+                }
+            }
+        }
+        
+        if ($issues) {
+            Write-Host "`nDocumentation issues:" -ForegroundColor Yellow
+            $issues | ForEach-Object {
+                Write-Host "  $_" -ForegroundColor Yellow
+            }
+        } else {
+            Write-Host "Documentation files look good!" -ForegroundColor Green
+        }
