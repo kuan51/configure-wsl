@@ -44,7 +44,13 @@ param(
     [switch]$SkipStarship,
     
     [Parameter(Mandatory = $false)]
-    [string]$LogPath = "$env:TEMP\configure-wsl.log"
+    [string]$LogPath = "$env:TEMP\configure-wsl.log",
+    
+    [Parameter(Mandatory = $false)]
+    [string]$WSLUsername,
+    
+    [Parameter(Mandatory = $false)]
+    [SecureString]$WSLPassword
 )
 
 #Requires -RunAsAdministrator
@@ -383,7 +389,166 @@ function New-ConfigurationBackup {
 }
 #endregion
 
+#region Credential Functions
+function Get-WSLCredentials {
+    <#
+    .SYNOPSIS
+        Collect WSL user credentials for automated setup
+    #>
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$Username,
+        
+        [Parameter(Mandatory = $false)]
+        [SecureString]$Password
+    )
+    
+    $credentials = @{
+        Username = $Username
+        Password = $Password
+    }
+    
+    # Collect username if not provided
+    if (-not $credentials.Username) {
+        Write-Host ""
+        Write-Host "WSL User Setup" -ForegroundColor Cyan
+        Write-Host "===============" -ForegroundColor Cyan
+        Write-Host "Please provide credentials for your WSL user account." -ForegroundColor Yellow
+        Write-Host "This will be used to create your default user in the WSL distribution." -ForegroundColor Yellow
+        Write-Host ""
+        
+        do {
+            $credentials.Username = Read-Host "Enter WSL username (lowercase, no spaces)"
+            if ([string]::IsNullOrWhiteSpace($credentials.Username)) {
+                Write-Host "Username cannot be empty. Please try again." -ForegroundColor Red
+            }
+            elseif ($credentials.Username -match '[^a-z0-9]') {
+                Write-Host "Username should contain only lowercase letters and numbers. Please try again." -ForegroundColor Red
+                $credentials.Username = $null
+            }
+        } while ([string]::IsNullOrWhiteSpace($credentials.Username))
+    }
+    
+    # Collect password if not provided
+    if (-not $credentials.Password) {
+        do {
+            $credentials.Password = Read-Host "Enter password for $($credentials.Username)" -AsSecureString
+            $confirmPassword = Read-Host "Confirm password" -AsSecureString
+            
+            # Convert to plain text for comparison
+            $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($credentials.Password))
+            $plainConfirm = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($confirmPassword))
+            
+            if ($plainPassword -ne $plainConfirm) {
+                Write-Host "Passwords do not match. Please try again." -ForegroundColor Red
+                $credentials.Password = $null
+            }
+            elseif ($plainPassword.Length -lt 1) {
+                Write-Host "Password cannot be empty. Please try again." -ForegroundColor Red
+                $credentials.Password = $null
+            }
+            
+            # Clear plain text passwords from memory
+            $plainPassword = $null
+            $plainConfirm = $null
+        } while (-not $credentials.Password)
+        
+        Write-Host ""
+        Write-Host "Credentials collected successfully. Proceeding with automated setup..." -ForegroundColor Green
+        Write-Host ""
+    }
+    
+    return $credentials
+}
+#endregion
+
 #region WSL Functions
+function Get-WSLErrorMessage {
+    <#
+    .SYNOPSIS
+        Translate WSL error codes to helpful messages
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$ExitCode,
+        
+        [string]$ErrorOutput = ""
+    )
+    
+    switch ($ExitCode) {
+        -1 {
+            if ($ErrorOutput -match "0x8000000d") {
+                return "Another WSL operation is in progress. Please wait for it to complete and try again."
+            }
+            elseif ($ErrorOutput -match "0x80370102") {
+                return "Virtual Machine Platform is not enabled. Run 'Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform' and restart."
+            }
+            elseif ($ErrorOutput -match "0x80370114") {
+                return "WSL 2 requires an update to its kernel component. Visit https://aka.ms/wsl2kernel"
+            }
+            return "WSL operation failed. Check if WSL is properly installed and try restarting your computer."
+        }
+        1 {
+            return "The requested distribution is not available or WSL is not properly configured."
+        }
+        default {
+            return "WSL operation failed with exit code: $ExitCode"
+        }
+    }
+}
+
+function Test-WSLDistributionState {
+    <#
+    .SYNOPSIS
+        Check WSL distribution state and handle stuck operations
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DistroName
+    )
+    
+    Write-Log "Checking WSL distribution state for '$DistroName'..." -Level "INFO"
+    
+    try {
+        $distroInfo = & wsl.exe --list --all --verbose 2>&1 | Select-String $DistroName
+        
+        if ($distroInfo -match "Uninstalling") {
+            Write-Log "Distribution '$DistroName' is being uninstalled. Waiting for completion..." -Level "WARN"
+            
+            # Wait up to 60 seconds for uninstallation
+            $waited = 0
+            while ($waited -lt 60) {
+                Start-Sleep -Seconds 5
+                $waited += 5
+                
+                $currentInfo = & wsl.exe --list --all --verbose 2>&1 | Select-String $DistroName
+                if (-not $currentInfo -or $currentInfo -notmatch "Uninstalling") {
+                    Write-Log "Uninstallation completed" -Level "INFO"
+                    return $true
+                }
+                
+                Write-Log "Still waiting... ($waited/60 seconds)" -Level "INFO"
+            }
+            
+            # Force unregister if still stuck
+            Write-Log "Forcing unregistration of stuck distribution..." -Level "WARN"
+            & wsl.exe --unregister $DistroName 2>$null
+            Start-Sleep -Seconds 3
+            return $true
+        }
+        elseif ($distroInfo -match "Installing") {
+            Write-Log "Distribution '$DistroName' is being installed by another process" -Level "ERROR"
+            return $false
+        }
+        
+        return $true
+    }
+    catch {
+        Write-Log "Error checking distribution state: $_" -Level "WARN"
+        return $true  # Continue anyway
+    }
+}
+
 function Install-WSLDistribution {
     <#
     .SYNOPSIS
@@ -391,13 +556,25 @@ function Install-WSLDistribution {
     #>
     param(
         [Parameter(Mandatory = $true)]
-        [string]$DistroName
+        [string]$DistroName,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$Username,
+        
+        [Parameter(Mandatory = $true)]
+        [SecureString]$Password
     )
     
     Write-Log "Checking for WSL distribution: $DistroName" -Level "INFO"
     
     try {
-        # First, verify WSL is working
+        # First check if distribution is in a stuck state
+        if (-not (Test-WSLDistributionState -DistroName $DistroName)) {
+            Write-Log "Cannot proceed: Distribution is in an invalid state" -Level "ERROR"
+            return $false
+        }
+        
+        # Verify WSL is working
         $wslTest = & wsl.exe --status 2>$null
         if ($LASTEXITCODE -ne 0) {
             Write-Log "WSL is not ready. Testing basic functionality..." -Level "WARN"
@@ -409,30 +586,97 @@ function Install-WSLDistribution {
             }
         }
         
-        # Check existing distributions
+        # Check existing distributions with state information
         $existingDistros = @()
+        $distroStates = @{}
         try {
-            $distroList = & wsl.exe --list --quiet 2>$null
-            if ($LASTEXITCODE -eq 0 -and $distroList) {
-                $existingDistros = $distroList | Where-Object { $_ -ne "" -and $_.Trim() -ne "" } | ForEach-Object { $_.Trim() }
+            # Get detailed distribution information including state
+            $distroListVerbose = & wsl.exe --list --all --verbose 2>$null
+            if ($LASTEXITCODE -eq 0 -and $distroListVerbose) {
+                # Parse the verbose output to get distribution states
+                $lines = $distroListVerbose | Select-Object -Skip 1 # Skip header
+                foreach ($line in $lines) {
+                    if ($line -match '^\s*\*?\s*(.+?)\s+(Running|Stopped|Installing|Uninstalling|Converting)\s+') {
+                        $name = $Matches[1].Trim()
+                        $state = $Matches[2].Trim()
+                        $distroStates[$name] = $state
+                        $existingDistros += $name
+                    }
+                }
+            }
+            
+            # Fallback to simple list if verbose fails
+            if ($existingDistros.Count -eq 0) {
+                $distroList = & wsl.exe --list --quiet 2>$null
+                if ($LASTEXITCODE -eq 0 -and $distroList) {
+                    $existingDistros = $distroList | Where-Object { $_ -ne "" -and $_.Trim() -ne "" } | ForEach-Object { $_.Trim() }
+                }
             }
         }
         catch {
             Write-Log "Could not list existing distributions, proceeding with installation" -Level "WARN"
         }
         
-        # Check if distribution already exists
+        # Check if distribution already exists and its state
         $distroExists = $false
+        $distroState = $null
         foreach ($distro in $existingDistros) {
             if ($distro -eq $DistroName -or $distro -like "*$DistroName*") {
                 $distroExists = $true
+                $distroState = $distroStates[$distro]
                 break
             }
         }
         
         if ($distroExists) {
-            Write-Log "Distribution '$DistroName' is already installed" -Level "SUCCESS"
-            return $true
+            # Check distribution state
+            if ($distroState -eq "Uninstalling") {
+                Write-Log "Distribution '$DistroName' is currently being uninstalled. Waiting for completion..." -Level "WARN"
+                
+                # Wait for uninstallation to complete (max 60 seconds)
+                $waitTime = 0
+                $maxWaitTime = 60
+                while ($waitTime -lt $maxWaitTime) {
+                    Start-Sleep -Seconds 5
+                    $waitTime += 5
+                    
+                    # Check if still uninstalling
+                    $currentState = & wsl.exe --list --all --verbose 2>$null | Select-String $DistroName
+                    if (-not $currentState -or $currentState -notmatch "Uninstalling") {
+                        Write-Log "Uninstallation completed" -Level "INFO"
+                        $distroExists = $false
+                        break
+                    }
+                    
+                    Write-Log "Still waiting for uninstallation to complete... ($waitTime/$maxWaitTime seconds)" -Level "INFO"
+                }
+                
+                if ($distroExists) {
+                    Write-Log "Uninstallation is taking too long. Attempting to force unregister..." -Level "WARN"
+                    & wsl.exe --unregister $DistroName 2>$null
+                    Start-Sleep -Seconds 5
+                    $distroExists = $false
+                }
+            }
+            elseif ($distroState -eq "Installing") {
+                Write-Log "Distribution '$DistroName' is currently being installed by another process" -Level "ERROR"
+                return $false
+            }
+            else {
+                Write-Log "Distribution '$DistroName' is already installed (State: $distroState)" -Level "SUCCESS"
+                
+                # Verify user exists and is properly configured
+                Write-Log "Verifying existing user configuration..." -Level "INFO"
+                $userCheck = & wsl.exe -d $DistroName bash -c "id $Username" 2>$null
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Log "User '$Username' does not exist in existing distribution. Creating user..." -Level "WARN"
+                    return Set-WSLDefaultUser -DistroName $DistroName -Username $Username -Password $Password
+                }
+                else {
+                    Write-Log "User '$Username' already exists in distribution" -Level "SUCCESS"
+                    return $true
+                }
+            }
         }
         
         Write-Log "Installing WSL distribution: $DistroName" -Level "INFO"
@@ -447,20 +691,23 @@ function Install-WSLDistribution {
         if ($installProcess.ExitCode -eq 0) {
             Write-Log "WSL distribution '$DistroName' installation completed successfully" -Level "SUCCESS"
             
-            # Wait for installation to complete
-            Start-Sleep -Seconds 5
+            # Wait for installation to complete and WSL to be ready
+            Write-Log "Waiting for WSL distribution to be ready..." -Level "INFO"
+            Start-Sleep -Seconds 10
             
-            # Initialize the distribution with automated setup
-            Write-Log "Initializing distribution with automated setup..." -Level "INFO"
+            # Set up the user account immediately to prevent interactive prompts
+            Write-Log "Setting up automated user account..." -Level "INFO"
+            $userSetupSuccess = Set-WSLDefaultUser -DistroName $DistroName -Username $Username -Password $Password
+            
+            if (-not $userSetupSuccess) {
+                Write-Log "Failed to set up user account automatically" -Level "ERROR"
+                return $false
+            }
+            
+            # Initialize the distribution after user setup
+            Write-Log "Initializing distribution with essential packages..." -Level "INFO"
             try {
-                # First, set up default user to avoid interactive prompts
-                Write-Log "Setting up default user configuration..." -Level "INFO"
-                $userSetupResult = & wsl.exe -d $DistroName --user root bash -c "useradd -m -s /bin/bash wsluser && echo 'wsluser:wsluser' | chpasswd && usermod -aG sudo wsluser" 2>$null
-                
-                # Set default user for this distribution
-                & wsl.exe -d $DistroName --set-default-user wsluser 2>$null
-                
-                # Create a temporary script for automated initial setup
+                # Create a temporary script for automated initial setup (run as root to avoid sudo prompts)
                 $setupScript = @'
 #!/bin/bash
 # Automated WSL distribution setup
@@ -468,16 +715,16 @@ echo "Setting up WSL distribution..."
 
 # Update package lists (suppress interactive prompts)
 export DEBIAN_FRONTEND=noninteractive
-sudo apt-get update -qq
+apt-get update -qq
 
 # Install essential packages
-sudo apt-get install -y curl wget git unzip
+apt-get install -y curl wget git unzip
 
 echo "WSL distribution setup completed"
 '@
                 
-                # Run the setup in WSL with the default user
-                $setupResult = $setupScript | & wsl.exe -d $DistroName --user wsluser bash
+                # Run the setup in WSL as root to avoid sudo prompts
+                $setupResult = $setupScript | & wsl.exe -d $DistroName --user root bash
                 if ($LASTEXITCODE -eq 0) {
                     Write-Log "Distribution initialized successfully" -Level "SUCCESS"
                 }
@@ -506,7 +753,39 @@ echo "WSL distribution setup completed"
             return $true
         }
         else {
-            Write-Log "WSL distribution installation failed with exit code: $($installProcess.ExitCode)" -Level "ERROR"
+            # Capture error output for better diagnostics
+            $errorOutput = & wsl.exe --install -d $DistroName --no-launch 2>&1 | Out-String
+            $errorMessage = Get-WSLErrorMessage -ExitCode $installProcess.ExitCode -ErrorOutput $errorOutput
+            
+            Write-Log "WSL distribution installation failed: $errorMessage" -Level "ERROR"
+            
+            # Check if error is due to ongoing operation
+            if ($installProcess.ExitCode -eq -1 -and $errorOutput -match "0x8000000d") {
+                # Try to clean up the stuck operation
+                Write-Log "Attempting to clean up stuck WSL operation..." -Level "INFO"
+                
+                $cleanupResult = Test-WSLDistributionState -DistroName $DistroName
+                if ($cleanupResult) {
+                    Write-Log "Retrying installation after cleanup..." -Level "INFO"
+                    
+                    # Retry installation once
+                    $retryProcess = Start-Process -FilePath "wsl.exe" -ArgumentList $installArgs -Wait -PassThru -NoNewWindow
+                    if ($retryProcess.ExitCode -eq 0) {
+                        Write-Log "WSL distribution '$DistroName' installation completed successfully on retry" -Level "SUCCESS"
+                        
+                        # Continue with user setup
+                        Start-Sleep -Seconds 10
+                        $userSetupSuccess = Set-WSLDefaultUser -DistroName $DistroName -Username $Username -Password $Password
+                        
+                        if (-not $userSetupSuccess) {
+                            Write-Log "Failed to set up user account automatically" -Level "ERROR"
+                            return $false
+                        }
+                        
+                        return $true
+                    }
+                }
+            }
             
             # Try alternative installation method for older systems
             Write-Log "Attempting alternative installation method..." -Level "INFO"
@@ -515,8 +794,229 @@ echo "WSL distribution setup completed"
     }
     catch {
         Write-Log "Error during WSL distribution installation: $_" -Level "ERROR"
+        
+        # If it's a specific WSL error, provide more context
+        if ($_.Exception.Message -match "0x8000000d") {
+            Write-Log "This error typically occurs when another WSL operation is in progress." -Level "ERROR"
+            Write-Log "Please close all WSL-related windows and try again." -Level "ERROR"
+            Write-Log "If the problem persists, restart your computer." -Level "ERROR"
+            return $false
+        }
+        
         Write-Log "Attempting alternative installation method..." -Level "INFO"
         return Install-WSLDistributionAlternative -DistroName $DistroName
+    }
+}
+
+function Set-WSLDefaultUser {
+    <#
+    .SYNOPSIS
+        Set up the default user for a WSL distribution with automated user creation
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DistroName,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$Username,
+        
+        [Parameter(Mandatory = $true)]
+        [SecureString]$Password
+    )
+    
+    Write-Log "Setting up default user '$Username' for distribution '$DistroName'" -Level "INFO"
+    
+    try {
+        # Convert secure string to plain text for use in WSL commands
+        $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password))
+        
+        # Method 1: Try using ubuntu config command (Ubuntu distributions)
+        if ($DistroName -like "*Ubuntu*" -or $DistroName -eq "Ubuntu") {
+            Write-Log "Using Ubuntu configuration method..." -Level "INFO"
+            
+            # Create user configuration script with sudoers setup
+            $ubuntuConfigScript = @"
+#!/bin/bash
+set -e
+
+# Suppress interactive prompts
+export DEBIAN_FRONTEND=noninteractive
+
+echo "Creating user $Username..."
+useradd -m -s /bin/bash $Username
+echo "${Username}:${plainPassword}" | chpasswd
+usermod -aG sudo $Username
+
+# Configure passwordless sudo for essential commands to avoid interactive prompts
+echo "$Username ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /usr/bin/curl, /usr/bin/wget" > /etc/sudoers.d/$Username
+chmod 440 /etc/sudoers.d/$Username
+
+echo "User $Username created successfully"
+"@
+            
+            # Execute as root to create user
+            $configResult = $ubuntuConfigScript | & wsl.exe -d $DistroName --user root bash
+            
+            if ($LASTEXITCODE -eq 0) {
+                Write-Log "User created successfully using Ubuntu method" -Level "SUCCESS"
+            }
+            else {
+                Write-Log "Ubuntu method failed, trying generic method..." -Level "WARN"
+                throw "Ubuntu method failed"
+            }
+        }
+        else {
+            # Method 2: Generic Debian-based method
+            Write-Log "Using generic Debian configuration method..." -Level "INFO"
+            throw "Using generic method"
+        }
+        
+        # Set the user as default for the distribution
+        Write-Log "Setting $Username as default user..." -Level "INFO"
+        
+        # Try multiple methods to set default user
+        $setDefaultUser = $false
+        
+        # Method 1: Use wsl --set-default-user (Windows 11 and newer WSL)
+        try {
+            $setUserResult = & wsl.exe -d $DistroName --set-default-user $Username 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Log "Default user set using --set-default-user flag" -Level "SUCCESS"
+                $setDefaultUser = $true
+            }
+        }
+        catch {
+            Write-Log "WSL --set-default-user not available" -Level "INFO"
+        }
+        
+        # Method 2: Use distribution-specific config (Ubuntu)
+        if (-not $setDefaultUser -and ($DistroName -like "*Ubuntu*" -or $DistroName -eq "Ubuntu")) {
+            try {
+                $ubuntuConfigPath = "$env:LOCALAPPDATA\Packages\CanonicalGroupLimited.UbuntuonWindows_79rhkp1fndgsc\LocalState"
+                if (-not (Test-Path $ubuntuConfigPath)) {
+                    # Try different Ubuntu package names
+                    $ubuntuPackages = Get-ChildItem "$env:LOCALAPPDATA\Packages" | Where-Object { $_.Name -like "*Ubuntu*" } | Select-Object -First 1
+                    if ($ubuntuPackages) {
+                        $ubuntuConfigPath = Join-Path $ubuntuPackages.FullName "LocalState"
+                    }
+                }
+                
+                if (Test-Path $ubuntuConfigPath) {
+                    & ubuntu.exe config --default-user $Username 2>$null
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Log "Default user set using ubuntu config command" -Level "SUCCESS"
+                        $setDefaultUser = $true
+                    }
+                }
+            }
+            catch {
+                Write-Log "Ubuntu config method not available" -Level "INFO"
+            }
+        }
+        
+        # Method 3: Create /etc/wsl.conf to set default user
+        if (-not $setDefaultUser) {
+            Write-Log "Using /etc/wsl.conf method to set default user..." -Level "INFO"
+            
+            $wslConfContent = @"
+[user]
+default=$Username
+"@
+            
+            $createWslConf = $wslConfContent | & wsl.exe -d $DistroName --user root tee /etc/wsl.conf
+            if ($LASTEXITCODE -eq 0) {
+                Write-Log "Default user configured in /etc/wsl.conf" -Level "SUCCESS"
+                $setDefaultUser = $true
+            }
+        }
+        
+        if (-not $setDefaultUser) {
+            Write-Log "Warning: Could not set default user, but user was created successfully" -Level "WARN"
+        }
+        
+        # Test the user setup
+        Write-Log "Testing user setup..." -Level "INFO"
+        $testUser = & wsl.exe -d $DistroName --user $Username whoami 2>$null
+        if ($LASTEXITCODE -eq 0 -and $testUser.Trim() -eq $Username) {
+            Write-Log "User setup verified successfully" -Level "SUCCESS"
+            return $true
+        }
+        else {
+            Write-Log "User verification failed" -Level "ERROR"
+            return $false
+        }
+    }
+    catch {
+        Write-Log "Error setting up default user: $_" -Level "ERROR"
+        
+        # Fallback: Generic method for any Debian-based distribution
+        try {
+            Write-Log "Attempting fallback user creation method..." -Level "INFO"
+            
+            # Convert secure string to plain text
+            $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password))
+            
+            # Generic user creation script with sudoers configuration
+            $genericScript = @"
+#!/bin/bash
+set -e
+
+# Check if user already exists
+if id "$Username" &>/dev/null; then
+    echo "User $Username already exists"
+else
+    echo "Creating user $Username..."
+    useradd -m -s /bin/bash $Username
+    echo "${Username}:${plainPassword}" | chpasswd
+    
+    # Add to sudo group if it exists
+    if getent group sudo &>/dev/null; then
+        usermod -aG sudo $Username
+    fi
+    
+    # Add to wheel group if it exists (some distributions)
+    if getent group wheel &>/dev/null; then
+        usermod -aG wheel $Username
+    fi
+    
+    # Configure passwordless sudo for essential commands to avoid prompts
+    echo "$Username ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /usr/bin/curl, /usr/bin/wget" >> /etc/sudoers.d/$Username
+    chmod 440 /etc/sudoers.d/$Username
+fi
+
+echo "User setup completed"
+"@
+            
+            $fallbackResult = $genericScript | & wsl.exe -d $DistroName --user root bash
+            
+            if ($LASTEXITCODE -eq 0) {
+                Write-Log "Fallback user creation succeeded" -Level "SUCCESS"
+                
+                # Try to set as default user
+                $wslConfContent = @"
+[user]
+default=$Username
+"@
+                $wslConfContent | & wsl.exe -d $DistroName --user root tee /etc/wsl.conf > $null
+                
+                return $true
+            }
+            else {
+                Write-Log "Fallback user creation failed" -Level "ERROR"
+                return $false
+            }
+        }
+        catch {
+            Write-Log "Fallback method also failed: $_" -Level "ERROR"
+            return $false
+        }
+    }
+    finally {
+        # Clear plain text password from memory
+        if ($plainPassword) {
+            $plainPassword = $null
+            [System.GC]::Collect()
+        }
     }
 }
 
@@ -576,7 +1076,10 @@ function Install-StarshipInWSL {
     #>
     param(
         [Parameter(Mandatory = $true)]
-        [string]$DistroName
+        [string]$DistroName,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$Username
     )
     
     Write-Log "Installing Starship and dependencies in WSL: $DistroName" -Level "INFO"
@@ -589,10 +1092,18 @@ set -e
 export DEBIAN_FRONTEND=noninteractive
 
 echo "Updating package lists..."
-sudo apt-get update -qq
+# Use sudo without password prompt (configured during user setup)
+sudo -n apt-get update -qq 2>/dev/null || {
+    echo "Error: sudo access not configured properly. Continuing without system updates."
+}
 
 echo "Installing dependencies..."
-sudo apt-get install -y curl unzip fonts-firacode
+# Try to install with sudo, fallback if it fails
+if sudo -n apt-get install -y curl unzip fonts-firacode 2>/dev/null; then
+    echo "Dependencies installed successfully"
+else
+    echo "Warning: Could not install system packages. Continuing with Starship installation..."
+fi
 
 echo "Installing Starship prompt..."
 curl -sS https://starship.rs/install.sh | sh -s -- -y
@@ -633,9 +1144,9 @@ echo "Starship installation completed successfully"
             throw "Failed to create installation script in WSL"
         }
         
-        # Execute the script within WSL with the default user
+        # Execute the script within WSL with the configured user
         Write-Log "Executing Starship installation script..." -Level "INFO"
-        $wslProcess = Start-Process -FilePath "wsl.exe" -ArgumentList "-d", $DistroName, "--user", "wsluser", "bash", $wslTempPath -Wait -PassThru -NoNewWindow
+        $wslProcess = Start-Process -FilePath "wsl.exe" -ArgumentList "-d", $DistroName, "--user", $Username, "bash", $wslTempPath -Wait -PassThru -NoNewWindow
         
         # Clean up the script file in WSL
         & wsl.exe -d $DistroName rm -f $wslTempPath 2>$null
@@ -916,12 +1427,16 @@ function Main {
         Write-Log "Starting WSL Development Environment Configuration" -Level "INFO"
         Write-Log "Parameters: DistroName=$DistroName, SkipFontInstall=$SkipFontInstall, SkipStarship=$SkipStarship" -Level "INFO"
         
+        # Collect WSL user credentials for automated setup
+        Write-Log "Collecting WSL user credentials..." -Level "INFO"
+        $wslCredentials = Get-WSLCredentials -Username $WSLUsername -Password $WSLPassword
+        
         # Validate prerequisites
         Test-Prerequisites
         
         # Step 1: Install WSL Distribution
         Write-Log "=== Step 1: WSL Distribution Setup ===" -Level "INFO"
-        $wslResult = Install-WSLDistribution -DistroName $DistroName
+        $wslResult = Install-WSLDistribution -DistroName $DistroName -Username $wslCredentials.Username -Password $wslCredentials.Password
         if (-not $wslResult) {
             Write-Log "WSL installation failed. Please check the logs and try again." -Level "ERROR"
             return 1
@@ -942,7 +1457,7 @@ function Main {
         # Step 3: Install Starship (if not skipped)
         if (-not $SkipStarship) {
             Write-Log "=== Step 3: Starship Prompt Installation ===" -Level "INFO"
-            $starshipResult = Install-StarshipInWSL -DistroName $DistroName
+            $starshipResult = Install-StarshipInWSL -DistroName $DistroName -Username $wslCredentials.Username
             if (-not $starshipResult) {
                 Write-Log "Starship installation failed, but continuing with other steps" -Level "WARN"
             }
