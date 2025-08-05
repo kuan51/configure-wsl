@@ -424,15 +424,21 @@ if ! grep -q "Welcome Viber" ~/.bashrc 2>/dev/null; then
     echo '    echo -e "\033[1;36m"' >> ~/.bashrc
     echo '    echo "        a8888b.                    Welcome Viber, let'\''s get to work!"' >> ~/.bashrc
     echo '    echo "             d888888b."' >> ~/.bashrc
-    echo '    echo "             8P\"YP\"Y88              OS: $(lsb_release -ds 2>/dev/null || echo \"Linux\")"' >> ~/.bashrc
-    echo '    echo "             8|o||o|88              Host: $(cat /proc/sys/kernel/hostname)"' >> ~/.bashrc
-    echo '    echo "             8'\''    .88              Kernel: $(uname -r)"' >> ~/.bashrc
+    echo '    OS=$(lsb_release -ds 2>/dev/null || echo "Linux")' >> ~/.bashrc
+    echo '    HOST=$(cat /proc/sys/kernel/hostname 2>/dev/null || echo "localhost")' >> ~/.bashrc
+    echo '    KERNEL=$(uname -r 2>/dev/null || echo "unknown")' >> ~/.bashrc
+    echo '    CPU=$(grep "model name" /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | sed "s/^ *//" || echo "unknown")' >> ~/.bashrc
+    echo '    MEMORY=$(free -h 2>/dev/null | awk "/^Mem:/ {print \$2}" || echo "unknown")' >> ~/.bashrc
+    echo '    SWAP=$(free -h 2>/dev/null | awk "/^Swap:/ {print \$2}" || echo "unknown")' >> ~/.bashrc
+    echo '    echo "             8P\"YP\"Y88              OS: $OS"' >> ~/.bashrc
+    echo '    echo "             8|o||o|88              Host: $HOST"' >> ~/.bashrc
+    echo '    echo "             8'\''    .88              Kernel: $KERNEL"' >> ~/.bashrc
     echo '    echo "             8\`._.\'' Y8.             Shell: $SHELL"' >> ~/.bashrc
     echo '    echo "            d/      \`8b.            Terminal: ${TERM:-unknown}"' >> ~/.bashrc
-    echo '    echo "          .dP   .     Y8b.          CPU: $(grep '\''model name'\'' /proc/cpuinfo | head -1 | cut -d: -f2 | sed '\''s/^ *//'\'')"' >> ~/.bashrc
+    echo '    echo "          .dP   .     Y8b.          CPU: $CPU"' >> ~/.bashrc
     echo '    echo "         d8:'\''   \"   \`::88b.         GPU:"' >> ~/.bashrc
-    echo '    echo "        d8\"           \`Y88b         Memory: $(free -h | awk '\''/^Mem:/ {print $2}'\'')"' >> ~/.bashrc
-    echo '    echo "       :8P     '\''       :888         Swap: $(free -h | awk '\''/^Swap:/ {print $2}'\'')"' >> ~/.bashrc
+    echo '    echo "        d8\"           \`Y88b         Memory: $MEMORY"' >> ~/.bashrc
+    echo '    echo "       :8P     '\''       :888         Swap: $SWAP"' >> ~/.bashrc
     echo '    echo "        8a.    :      _a88P"' >> ~/.bashrc
     echo '    echo "      ._/\"Yaa_ :    .| 88P|        Features: FiraCode Font, Starship, Dev Tools"' >> ~/.bashrc
     echo '    echo " jgs  \\    YP\"      \`| 8P  \`.      Happy coding!"' >> ~/.bashrc
@@ -448,7 +454,9 @@ fi
 '@
         
         # Convert to base64 to avoid quoting issues
-        $scriptBytes = [System.Text.Encoding]::UTF8.GetBytes($bashScript)
+        # Ensure Unix line endings by converting CRLF to LF
+        $bashScriptUnix = $bashScript -replace "`r`n", "`n" -replace "`r", "`n"
+        $scriptBytes = [System.Text.Encoding]::UTF8.GetBytes($bashScriptUnix)
         $base64Script = [System.Convert]::ToBase64String($scriptBytes)
         
         # Execute the script
@@ -505,8 +513,8 @@ function Set-WSLDefaultUser {
         # Convert secure string to plain text for use in WSL commands
         $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password))
         
-        # Create user configuration script
-        $userScript = @"
+        # Create user configuration script with placeholders
+        $userScript = @'
 #!/bin/bash
 set -e
 
@@ -514,29 +522,33 @@ set -e
 export DEBIAN_FRONTEND=noninteractive
 
 # Check if user already exists
-if id "$Username" &>/dev/null; then
-    echo "User $Username already exists"
+if id "USERNAME_PLACEHOLDER" &>/dev/null; then
+    echo "User USERNAME_PLACEHOLDER already exists"
 else
-    echo "Creating user $Username..."
-    useradd -m -s /bin/bash $Username
-    echo "$Username`:$plainPassword" | chpasswd
+    echo "Creating user USERNAME_PLACEHOLDER..."
+    useradd -m -s /bin/bash USERNAME_PLACEHOLDER
+    echo "USERNAME_PLACEHOLDER:PASSWORD_PLACEHOLDER" | chpasswd
     
     # Add to sudo group if it exists
     if getent group sudo &>/dev/null; then
-        usermod -aG sudo $Username
+        usermod -aG sudo USERNAME_PLACEHOLDER
     fi
     
     # Add to wheel group if it exists (some distributions)
     if getent group wheel &>/dev/null; then
-        usermod -aG wheel $Username
+        usermod -aG wheel USERNAME_PLACEHOLDER
     fi
 fi
 
 echo "User setup completed"
-"@
+'@
+        
+        # Replace placeholders and ensure Unix line endings
+        $userScriptUnix = $userScript -replace "`r`n", "`n" -replace "`r", "`n"
+        $userScriptUnix = $userScriptUnix -replace "USERNAME_PLACEHOLDER", $Username -replace "PASSWORD_PLACEHOLDER", $plainPassword
         
         # Execute as root to create user
-        $configResult = $userScript | & wsl.exe -d $DistroName --user root bash
+        $configResult = $userScriptUnix | & wsl.exe -d $DistroName --user root bash
         
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to create user $Username"
@@ -566,12 +578,16 @@ echo "User setup completed"
         if (-not $setDefaultUser) {
             Write-Log "Using /etc/wsl.conf method to set default user..." -Level "INFO"
             
-            $wslConfContent = @"
+            $wslConfContent = @'
 [user]
-default=$Username
-"@
+default=USERNAME_PLACEHOLDER
+'@
             
-            $wslConfContent | & wsl.exe -d $DistroName --user root tee /etc/wsl.conf > $null
+            # Replace placeholder and ensure Unix line endings
+            $wslConfContentUnix = $wslConfContent -replace "`r`n", "`n" -replace "`r", "`n"
+            $wslConfContentUnix = $wslConfContentUnix -replace "USERNAME_PLACEHOLDER", $Username
+            
+            $wslConfContentUnix | & wsl.exe -d $DistroName --user root tee /etc/wsl.conf > $null
             if ($LASTEXITCODE -eq 0) {
                 Write-Log "Default user configured in /etc/wsl.conf" -Level "SUCCESS"
                 $setDefaultUser = $true
@@ -873,8 +889,9 @@ sudo apt-get install -y curl wget git unzip
 echo "WSL distribution setup completed"
 '@
                 
-                # Run the setup in WSL with the created user
-                $setupResult = $setupScript | & wsl.exe -d $DistroName --user $Username bash
+                # Ensure Unix line endings and run the setup in WSL with the created user
+                $setupScriptUnix = $setupScript -replace "`r`n", "`n" -replace "`r", "`n"
+                $setupResult = $setupScriptUnix | & wsl.exe -d $DistroName --user $Username bash
                 if ($LASTEXITCODE -eq 0) {
                     Write-Log "Distribution initialized successfully" -Level "SUCCESS"
                 }
@@ -1035,7 +1052,9 @@ echo "Starship installation completed successfully"
         
         # Encode script content to base64 to safely transfer to WSL
         Write-Log "Creating installation script in WSL..." -Level "INFO"
-        $scriptBytes = [System.Text.Encoding]::UTF8.GetBytes($wslScript)
+        # Ensure Unix line endings by converting CRLF to LF
+        $wslScriptUnix = $wslScript -replace "`r`n", "`n" -replace "`r", "`n"
+        $scriptBytes = [System.Text.Encoding]::UTF8.GetBytes($wslScriptUnix)
         $base64Script = [System.Convert]::ToBase64String($scriptBytes)
         
         # Create and decode script in WSL
@@ -1241,6 +1260,9 @@ function Update-WindowsTerminalConfig {
         if ($settings.defaultProfile) {
             $defaultProfile = $settings.profiles.list | Where-Object { $_.guid -eq $settings.defaultProfile }
             if ($defaultProfile) {
+                if (-not $defaultProfile.font) {
+                    $defaultProfile | Add-Member -NotePropertyName "font" -NotePropertyValue @{} -Force
+                }
                 $defaultProfile.font = @{
                     face = "FiraCode Nerd Font"
                     size = 10

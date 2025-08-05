@@ -695,3 +695,114 @@ Describe "ConfigureWSL Error Handling Tests" {
             Test-ShouldNotThrow { Install-FiraCodeFont }
         }
 }
+
+Describe "ConfigureWSL Line Ending Conversion Tests" {
+    
+    if (-not $script:IsPester5Plus) {
+        # Ensure module is loaded for Pester 3.x
+        Import-TestModule
+    }
+    
+    Context "Line Ending Conversion Functionality" {
+        
+        It "Should convert CRLF to LF in bash scripts" {
+            # Test string with Windows line endings
+            $testScript = "#!/bin/bash`r`necho 'test'`r`necho 'done'"
+            
+            # Apply the same conversion logic used in the module
+            $convertedScript = $testScript -replace "`r`n", "`n" -replace "`r", "`n"
+            
+            # Verify conversion
+            Test-ShouldNotBeNullOrEmpty $convertedScript
+            Test-ShouldBe (($convertedScript -split "`r").Count) 1
+            Test-ShouldBe (($convertedScript -split "`n").Count) 3
+        }
+        
+        It "Should handle mixed line endings correctly" {
+            # Test string with mixed line endings
+            $testScript = "#!/bin/bash`r`necho 'line1'`necho 'line2'`r`necho 'line3'"
+            
+            # Apply conversion
+            $convertedScript = $testScript -replace "`r`n", "`n" -replace "`r", "`n"
+            
+            # Should only contain LF characters
+            Test-ShouldBe ($convertedScript -match "`r") $false
+            Test-ShouldBe (($convertedScript -split "`n").Count) 4
+        }
+        
+        It "Should preserve content during line ending conversion" {
+            $originalContent = "echo 'Hello World'`r`necho 'Test Line'`r`n"
+            $expectedContent = "echo 'Hello World'`necho 'Test Line'`n"
+            
+            $convertedContent = $originalContent -replace "`r`n", "`n" -replace "`r", "`n"
+            
+            Test-ShouldBe $convertedContent $expectedContent
+        }
+        
+        It "Should handle empty strings in line ending conversion" {
+            $emptyScript = ""
+            $convertedScript = $emptyScript -replace "`r`n", "`n" -replace "`r", "`n"
+            
+            Test-ShouldBe $convertedScript ""
+        }
+        
+        It "Should handle scripts with only LF line endings unchanged" {
+            $unixScript = "#!/bin/bash`necho 'test'`necho 'done'"
+            $convertedScript = $unixScript -replace "`r`n", "`n" -replace "`r", "`n"
+            
+            Test-ShouldBe $convertedScript $unixScript
+        }
+    }
+    
+    Context "Base64 Encoding with Line Ending Conversion" {
+        
+        It "Should encode scripts with Unix line endings" {
+            # Mock the encoding process used in the module
+            $testScript = "#!/bin/bash`r`necho 'test'"
+            $scriptUnix = $testScript -replace "`r`n", "`n" -replace "`r", "`n"
+            
+            # Test base64 encoding (similar to module behavior)
+            $scriptBytes = [System.Text.Encoding]::UTF8.GetBytes($scriptUnix)
+            $base64Script = [System.Convert]::ToBase64String($scriptBytes)
+            
+            Test-ShouldNotBeNullOrEmpty $base64Script
+            
+            # Decode and verify
+            $decodedBytes = [System.Convert]::FromBase64String($base64Script)
+            $decodedScript = [System.Text.Encoding]::UTF8.GetString($decodedBytes)
+            
+            Test-ShouldBe ($decodedScript -match "`r") $false
+            Test-ShouldBe $decodedScript $scriptUnix
+        }
+    }
+    
+    Context "Placeholder Replacement with Line Ending Conversion" {
+        
+        It "Should replace placeholders after line ending conversion" {
+            $scriptTemplate = "echo 'USERNAME_PLACEHOLDER'`r`necho 'PASSWORD_PLACEHOLDER'"
+            $username = "testuser"
+            $password = "testpass"
+            
+            # Apply the same process as in the module
+            $scriptUnix = $scriptTemplate -replace "`r`n", "`n" -replace "`r", "`n"
+            $finalScript = $scriptUnix -replace "USERNAME_PLACEHOLDER", $username -replace "PASSWORD_PLACEHOLDER", $password
+            
+            Test-ShouldMatch $finalScript "echo 'testuser'"
+            Test-ShouldMatch $finalScript "echo 'testpass'"
+            Test-ShouldBe ($finalScript -match "`r") $false
+        }
+        
+        It "Should handle special characters in placeholders during line ending conversion" {
+            $scriptTemplate = "echo 'USER: USERNAME_PLACEHOLDER'`r`necho 'PASS: PASSWORD_PLACEHOLDER'"
+            $username = "test@user"
+            $password = "p@ssw0rd!"
+            
+            $scriptUnix = $scriptTemplate -replace "`r`n", "`n" -replace "`r", "`n"
+            $finalScript = $scriptUnix -replace "USERNAME_PLACEHOLDER", $username -replace "PASSWORD_PLACEHOLDER", $password
+            
+            Test-ShouldMatch $finalScript "test@user"
+            Test-ShouldMatch $finalScript "p@ssw0rd!"
+            Test-ShouldBe ($finalScript -match "`r") $false
+        }
+    }
+}
