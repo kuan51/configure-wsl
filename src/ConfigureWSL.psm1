@@ -436,7 +436,7 @@ if id "$Username" &>/dev/null; then
 else
     echo "Creating user $Username..."
     useradd -m -s /bin/bash $Username
-    echo '$Username:$plainPassword' | chpasswd
+    echo "$Username`:$plainPassword" | chpasswd
     
     # Add to sudo group if it exists
     if getent group sudo &>/dev/null; then
@@ -524,6 +524,114 @@ default=$Username
     }
 }
 
+function Get-WSLErrorMessage {
+    <#
+    .SYNOPSIS
+        Translate WSL error codes to helpful messages
+    .DESCRIPTION
+        Converts WSL error codes and error output into user-friendly messages
+    .PARAMETER ExitCode
+        The exit code from WSL command
+    .PARAMETER ErrorOutput
+        Optional error output text
+    .OUTPUTS
+        System.String - User-friendly error message
+    .EXAMPLE
+        Get-WSLErrorMessage -ExitCode -1 -ErrorOutput "Error: 0x8000000d"
+    #>
+    [CmdletBinding()]
+    [OutputType([System.String])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$ExitCode,
+        
+        [string]$ErrorOutput = ""
+    )
+    
+    switch ($ExitCode) {
+        -1 {
+            if ($ErrorOutput -match "0x8000000d") {
+                return "Another WSL operation is in progress. Please wait for it to complete and try again."
+            }
+            elseif ($ErrorOutput -match "0x80370102") {
+                return "Virtual Machine Platform is not enabled. Run 'Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform' and restart."
+            }
+            elseif ($ErrorOutput -match "0x80370114") {
+                return "WSL 2 requires an update to its kernel component. Visit https://aka.ms/wsl2kernel"
+            }
+            return "WSL operation failed. Check if WSL is properly installed and try restarting your computer."
+        }
+        1 {
+            return "The requested distribution is not available or WSL is not properly configured."
+        }
+        default {
+            return "WSL operation failed with exit code: $ExitCode"
+        }
+    }
+}
+
+function Test-WSLDistributionState {
+    <#
+    .SYNOPSIS
+        Check WSL distribution state and handle stuck operations
+    .DESCRIPTION
+        Checks if a WSL distribution is in a stuck state (Installing/Uninstalling) and attempts to resolve it
+    .PARAMETER DistroName
+        Name of the WSL distribution to check
+    .OUTPUTS
+        System.Boolean - True if distribution is ready or cleaned up, False if blocked
+    .EXAMPLE
+        Test-WSLDistributionState -DistroName "Ubuntu"
+    #>
+    [CmdletBinding()]
+    [OutputType([System.Boolean])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DistroName
+    )
+    
+    Write-Log "Checking WSL distribution state for '$DistroName'..." -Level "INFO"
+    
+    try {
+        $distroInfo = & wsl.exe --list --all --verbose 2>&1 | Select-String $DistroName
+        
+        if ($distroInfo -match "Uninstalling") {
+            Write-Log "Distribution '$DistroName' is being uninstalled. Waiting for completion..." -Level "WARN"
+            
+            # Wait up to 60 seconds for uninstallation
+            $waited = 0
+            while ($waited -lt 60) {
+                Start-Sleep -Seconds 5
+                $waited += 5
+                
+                $currentInfo = & wsl.exe --list --all --verbose 2>&1 | Select-String $DistroName
+                if (-not $currentInfo -or $currentInfo -notmatch "Uninstalling") {
+                    Write-Log "Uninstallation completed" -Level "INFO"
+                    return $true
+                }
+                
+                Write-Log "Still waiting... ($waited/60 seconds)" -Level "INFO"
+            }
+            
+            # Force unregister if still stuck
+            Write-Log "Forcing unregistration of stuck distribution..." -Level "WARN"
+            & wsl.exe --unregister $DistroName 2>$null
+            Start-Sleep -Seconds 3
+            return $true
+        }
+        elseif ($distroInfo -match "Installing") {
+            Write-Log "Distribution '$DistroName' is being installed by another process" -Level "ERROR"
+            return $false
+        }
+        
+        return $true
+    }
+    catch {
+        Write-Log "Error checking distribution state: $_" -Level "WARN"
+        return $true  # Continue anyway
+    }
+}
+
 function Install-WSLDistribution {
     <#
     .SYNOPSIS
@@ -557,7 +665,13 @@ function Install-WSLDistribution {
     Write-Log "Checking for WSL distribution: $DistroName" -Level "INFO"
     
     try {
-        # First, verify WSL is working
+        # First check if distribution is in a stuck state
+        if (-not (Test-WSLDistributionState -DistroName $DistroName)) {
+            Write-Log "Cannot proceed: Distribution is in an invalid state" -Level "ERROR"
+            return $false
+        }
+        
+        # Verify WSL is working
         $wslTest = & wsl.exe --status 2>$null
         if ($LASTEXITCODE -ne 0) {
             Write-Log "WSL is not ready. Testing basic functionality..." -Level "WARN"
@@ -569,29 +683,50 @@ function Install-WSLDistribution {
             }
         }
         
-        # Check existing distributions
+        # Check existing distributions with state information
         $existingDistros = @()
+        $distroStates = @{}
         try {
-            $distroList = & wsl.exe --list --quiet 2>$null
-            if ($LASTEXITCODE -eq 0 -and $distroList) {
-                $existingDistros = $distroList | Where-Object { $_ -ne "" -and $_.Trim() -ne "" } | ForEach-Object { $_.Trim() }
+            # Get detailed distribution information including state
+            $distroListVerbose = & wsl.exe --list --all --verbose 2>$null
+            if ($LASTEXITCODE -eq 0 -and $distroListVerbose) {
+                # Parse the verbose output to get distribution states
+                $lines = $distroListVerbose | Select-Object -Skip 1 # Skip header
+                foreach ($line in $lines) {
+                    if ($line -match '^\s*\*?\s*(.+?)\s+(Running|Stopped|Installing|Uninstalling|Converting)\s+') {
+                        $name = $Matches[1].Trim()
+                        $state = $Matches[2].Trim()
+                        $distroStates[$name] = $state
+                        $existingDistros += $name
+                    }
+                }
+            }
+            
+            # Fallback to simple list if verbose fails
+            if ($existingDistros.Count -eq 0) {
+                $distroList = & wsl.exe --list --quiet 2>$null
+                if ($LASTEXITCODE -eq 0 -and $distroList) {
+                    $existingDistros = $distroList | Where-Object { $_ -ne "" -and $_.Trim() -ne "" } | ForEach-Object { $_.Trim() }
+                }
             }
         }
         catch {
             Write-Log "Could not list existing distributions, proceeding with installation" -Level "WARN"
         }
         
-        # Check if distribution already exists
+        # Check if distribution already exists and its state
         $distroExists = $false
+        $distroState = $null
         foreach ($distro in $existingDistros) {
             if ($distro -eq $DistroName -or $distro -like "*$DistroName*") {
                 $distroExists = $true
+                $distroState = $distroStates[$distro]
                 break
             }
         }
         
         if ($distroExists) {
-            Write-Log "Distribution '$DistroName' is already installed" -Level "SUCCESS"
+            Write-Log "Distribution '$DistroName' is already installed (State: $distroState)" -Level "SUCCESS"
             
             # Verify user exists and is properly configured
             Write-Log "Verifying existing user configuration..." -Level "INFO"
@@ -666,12 +801,54 @@ echo "WSL distribution setup completed"
             return $true
         }
         else {
-            Write-Log "WSL distribution installation failed with exit code: $($installProcess.ExitCode)" -Level "ERROR"
+            # Capture error output for better diagnostics
+            $errorOutput = & wsl.exe --install -d $DistroName --no-launch 2>&1 | Out-String
+            $errorMessage = Get-WSLErrorMessage -ExitCode $installProcess.ExitCode -ErrorOutput $errorOutput
+            
+            Write-Log "WSL distribution installation failed: $errorMessage" -Level "ERROR"
+            
+            # Check if error is due to ongoing operation
+            if ($installProcess.ExitCode -eq -1 -and $errorOutput -match "0x8000000d") {
+                # Try to clean up the stuck operation
+                Write-Log "Attempting to clean up stuck WSL operation..." -Level "INFO"
+                
+                $cleanupResult = Test-WSLDistributionState -DistroName $DistroName
+                if ($cleanupResult) {
+                    Write-Log "Retrying installation after cleanup..." -Level "INFO"
+                    
+                    # Retry installation once
+                    $retryProcess = Start-Process -FilePath "wsl.exe" -ArgumentList $installArgs -Wait -PassThru -NoNewWindow
+                    if ($retryProcess.ExitCode -eq 0) {
+                        Write-Log "WSL distribution '$DistroName' installation completed successfully on retry" -Level "SUCCESS"
+                        
+                        # Continue with user setup
+                        Start-Sleep -Seconds 10
+                        $userSetupSuccess = Set-WSLDefaultUser -DistroName $DistroName -Username $Username -Password $Password
+                        
+                        if (-not $userSetupSuccess) {
+                            Write-Log "Failed to set up user account automatically" -Level "ERROR"
+                            return $false
+                        }
+                        
+                        return $true
+                    }
+                }
+            }
+            
             return $false
         }
     }
     catch {
         Write-Log "Error during WSL distribution installation: $_" -Level "ERROR"
+        
+        # If it's a specific WSL error, provide more context
+        if ($_.Exception.Message -match "0x8000000d") {
+            Write-Log "This error typically occurs when another WSL operation is in progress." -Level "ERROR"
+            Write-Log "Please close all WSL-related windows and try again." -Level "ERROR"
+            Write-Log "If the problem persists, restart your computer." -Level "ERROR"
+            return $false
+        }
+        
         return $false
     }
 }
@@ -711,17 +888,38 @@ set -e
 export DEBIAN_FRONTEND=noninteractive
 
 echo "Updating package lists..."
-sudo apt-get update -qq
+# Use sudo without password prompt (configured during user setup)
+sudo -n apt-get update -qq 2>/dev/null || {
+    echo "Error: sudo access not configured properly. Continuing without system updates."
+}
 
 echo "Installing dependencies..."
-sudo apt-get install -y curl unzip fonts-firacode
+# Try to install with sudo, fallback if it fails
+if sudo -n apt-get install -y curl unzip fonts-firacode 2>/dev/null; then
+    echo "Dependencies installed successfully"
+else
+    echo "Warning: Could not install system packages. Continuing with Starship installation..."
+fi
 
-echo "Installing Starship prompt..."
-curl -sS https://starship.rs/install.sh | sh -s -- -y
+echo "Installing Starship prompt to user directory..."
+# Create local bin directory if it doesn't exist
+mkdir -p "$HOME/.local/bin"
+
+# Download and install Starship to user's local bin
+export BIN_DIR="$HOME/.local/bin"
+curl -sS https://starship.rs/install.sh | sh -s -- -y -b "$BIN_DIR"
+
+# Ensure local bin is in PATH
+export PATH="$HOME/.local/bin:$PATH"
 
 echo "Configuring shell integration..."
 # Configure bash
 BASHRC="$HOME/.bashrc"
+# Add local bin to PATH if not already there
+if ! grep -q '$HOME/.local/bin' "$BASHRC" 2>/dev/null; then
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$BASHRC"
+fi
+
 if ! grep -q "starship init" "$BASHRC" 2>/dev/null; then
     echo 'eval "$(starship init bash)"' >> "$BASHRC"
     echo "Added Starship to .bashrc"
@@ -729,6 +927,11 @@ fi
 
 # Configure zsh if present
 if [ -f "$HOME/.zshrc" ]; then
+    # Add local bin to PATH if not already there
+    if ! grep -q '$HOME/.local/bin' "$HOME/.zshrc" 2>/dev/null; then
+        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zshrc"
+    fi
+    
     if ! grep -q "starship init" "$HOME/.zshrc" 2>/dev/null; then
         echo 'eval "$(starship init zsh)"' >> "$HOME/.zshrc"
         echo "Added Starship to .zshrc"
@@ -840,9 +1043,29 @@ function Install-FiraCodeFont {
                     
                     # Register font with Windows (for better compatibility)
                     try {
-                        $shell = New-Object -ComObject Shell.Application
-                        $fontsFolder = $shell.Namespace(0x14)  # Fonts folder
-                        $fontsFolder.CopyHere($fontFile.FullName, 0x10)  # Don't show progress
+                        # Use Windows API to install font silently
+                        $signature = @'
+[DllImport("gdi32.dll", CharSet = CharSet.Auto)]
+public static extern int AddFontResource(string lpszFilename);
+
+[DllImport("user32.dll", CharSet = CharSet.Auto)]
+public static extern int SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+'@
+                        $type = Add-Type -MemberDefinition $signature -Name FontInstaller -Namespace Win32Functions -PassThru -ErrorAction SilentlyContinue
+                        
+                        # Add font resource
+                        $result = [Win32Functions.FontInstaller]::AddFontResource($destinationPath)
+                        if ($result -gt 0) {
+                            # Broadcast font change message
+                            $HWND_BROADCAST = [IntPtr]0xffff
+                            $WM_FONTCHANGE = 0x1D
+                            [Win32Functions.FontInstaller]::SendMessage($HWND_BROADCAST, $WM_FONTCHANGE, [IntPtr]::Zero, [IntPtr]::Zero)
+                            
+                            # Register in registry for persistence
+                            $regPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"
+                            $fontName = [System.IO.Path]::GetFileNameWithoutExtension($fontFile.Name)
+                            Set-ItemProperty -Path $regPath -Name "$fontName (TrueType)" -Value $fontFile.Name -ErrorAction SilentlyContinue
+                        }
                     }
                     catch {
                         # Fallback: Just copy the file (already done above)
@@ -997,18 +1220,27 @@ function Update-VSCodeConfig {
         $backupPath = New-ConfigurationBackup -FilePath $settingsPath -BackupName "vscode-settings"
         
         # Read existing settings or create new
-        $settings = @{}
+        $settingsObj = $null
         if (Test-Path $settingsPath) {
             $settingsContent = Get-Content $settingsPath -Raw -Encoding UTF8
             if ($settingsContent.Trim()) {
-                $settings = $settingsContent | ConvertFrom-Json
+                $settingsObj = $settingsContent | ConvertFrom-Json
+            }
+        }
+        
+        # Convert to hashtable for easier manipulation
+        $settings = @{}
+        if ($settingsObj) {
+            # Convert PSCustomObject to hashtable
+            $settingsObj.PSObject.Properties | ForEach-Object {
+                $settings[$_.Name] = $_.Value
             }
         }
         
         # Update font settings
-        $settings."terminal.integrated.fontFamily" = "FiraCode Nerd Font"
-        $settings."editor.fontFamily" = "FiraCode Nerd Font, Consolas, 'Courier New', monospace"
-        $settings."editor.fontLigatures" = $true
+        $settings["terminal.integrated.fontFamily"] = "FiraCode Nerd Font"
+        $settings["editor.fontFamily"] = "FiraCode Nerd Font, Consolas, 'Courier New', monospace"
+        $settings["editor.fontLigatures"] = $true
         
         # Ensure directory exists
         $settingsDir = Split-Path $settingsPath -Parent
@@ -1017,7 +1249,8 @@ function Update-VSCodeConfig {
         }
         
         # Write settings
-        $settings | ConvertTo-Json -Depth 20 | Set-Content -Path $settingsPath -Encoding UTF8
+        $settingsJson = $settings | ConvertTo-Json -Depth 20
+        Set-Content -Path $settingsPath -Value $settingsJson -Encoding UTF8
         Write-Log "VS Code configuration updated successfully" -Level "SUCCESS"
         return $true
     }

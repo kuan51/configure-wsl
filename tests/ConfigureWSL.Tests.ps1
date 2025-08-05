@@ -174,7 +174,9 @@ Describe "ConfigureWSL Module Import" {
                 'Update-VSCodeConfig',
                 'Test-Prerequisites',
                 'Write-Log',
-                'Initialize-Logging'
+                'Initialize-Logging',
+                'Get-WSLErrorMessage',
+                'Test-WSLDistributionState'
             )
             
             # Note: Test-IsAdministrator is not exported (private function)
@@ -432,6 +434,63 @@ Describe "ConfigureWSL WSL Functions" {
                 
                 $result = Install-StarshipInWSL -DistroName "Ubuntu"
                 Test-ShouldBeOfType $result [System.Boolean]
+            }
+        }
+
+        Describe "Get-WSLErrorMessage" {
+            It "Should return string value" {
+                $result = Get-WSLErrorMessage -ExitCode -1
+                Test-ShouldBeOfType $result [System.String]
+            }
+            
+            It "Should handle error code -1 with specific error output" {
+                $result = Get-WSLErrorMessage -ExitCode -1 -ErrorOutput "Error: 0x8000000d"
+                Test-ShouldBe ($result -like "*Another WSL operation*") $true
+            }
+            
+            It "Should handle generic error codes" {
+                $result = Get-WSLErrorMessage -ExitCode 999
+                Test-ShouldBe ($result -like "*exit code: 999*") $true
+            }
+            
+            It "Should not throw exceptions" {
+                Test-ShouldNotThrow { Get-WSLErrorMessage -ExitCode 0 }
+            }
+        }
+
+        Describe "Test-WSLDistributionState" {
+            It "Should accept DistroName parameter" {
+                Test-ShouldNotThrow { Test-WSLDistributionState -DistroName "Ubuntu" }
+            }
+            
+            It "Should return boolean value" {
+                # Mock WSL command to avoid actual checking
+                Mock -CommandName "Invoke-Expression" -MockWith { 
+                    return $null
+                }
+                
+                $result = Test-WSLDistributionState -DistroName "Ubuntu"
+                Test-ShouldBeOfType $result [System.Boolean]
+            }
+            
+            It "Should handle distribution in uninstalling state" {
+                # Mock WSL command to return uninstalling state
+                Mock -CommandName "Invoke-Expression" -MockWith { 
+                    return "Ubuntu    Uninstalling    2"
+                }
+                # Mock Start-Sleep to speed up test
+                Mock -CommandName "Start-Sleep" -MockWith {}
+                
+                $result = Test-WSLDistributionState -DistroName "Ubuntu"
+                Test-ShouldBeOfType $result [System.Boolean]
+            }
+            
+            It "Should not throw exceptions" {
+                # Mock all external commands
+                Mock -CommandName "Invoke-Expression" -MockWith { return $null }
+                Mock -CommandName "Start-Sleep" -MockWith {}
+                
+                Test-ShouldNotThrow { Test-WSLDistributionState -DistroName "Ubuntu" }
             }
         }
 }

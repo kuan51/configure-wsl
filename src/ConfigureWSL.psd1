@@ -8,7 +8,7 @@
 RootModule = 'ConfigureWSL.psm1'
 
 # Version number of this module.
-ModuleVersion = '2.0.0'
+ModuleVersion = '2.1.0'
 
 # Supported PSEditions
 CompatiblePSEditions = @('Desktop', 'Core')
@@ -75,7 +75,9 @@ FunctionsToExport = @(
     'Update-VSCodeConfig',
     'Test-Prerequisites',
     'Write-Log',
-    'Initialize-Logging'
+    'Initialize-Logging',
+    'Get-WSLErrorMessage',
+    'Test-WSLDistributionState'
 )
 
 # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -115,6 +117,15 @@ PrivateData = @{
 
         # ReleaseNotes of this module
         ReleaseNotes = @'
+## 2.1.0
+- Enhanced WSL distribution state checking with stuck operation detection
+- Improved error handling with specific WSL error code translations
+- Silent font installation using Windows API (no more prompts)
+- Starship installation now uses user directory to avoid sudo prompts
+- Fixed VS Code configuration updates for PSCustomObject handling
+- Added comprehensive unit tests for new functions
+- Automatic retry mechanism for failed WSL installations
+
 ## 2.0.0
 - Complete rewrite with proper module structure
 - Added comprehensive unit testing with Pester

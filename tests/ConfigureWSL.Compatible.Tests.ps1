@@ -178,7 +178,8 @@ Describe "ConfigureWSL WSL Functions" {
     }
     
     It "Install-WSLDistribution should accept DistroName parameter" {
-        { Install-WSLDistribution -DistroName "Ubuntu" } | Should Not Throw
+        $securePassword = ConvertTo-SecureString "testpass" -AsPlainText -Force
+        { Install-WSLDistribution -DistroName "Ubuntu" -Username "testuser" -Password $securePassword } | Should Not Throw
     }
     
     It "Install-WSLDistribution should return boolean value" {
@@ -191,12 +192,13 @@ Describe "ConfigureWSL WSL Functions" {
             return @("Ubuntu")
         }
         
-        $result = Install-WSLDistribution -DistroName "Ubuntu"
+        $securePassword = ConvertTo-SecureString "testpass" -AsPlainText -Force
+        $result = Install-WSLDistribution -DistroName "Ubuntu" -Username "testuser" -Password $securePassword
         $result | Should BeOfType [System.Boolean]
     }
     
     It "Install-StarshipInWSL should accept DistroName parameter" {
-        { Install-StarshipInWSL -DistroName "Ubuntu" } | Should Not Throw
+        { Install-StarshipInWSL -DistroName "Ubuntu" -Username "testuser" } | Should Not Throw
     }
     
     It "Install-StarshipInWSL should return boolean value" {
@@ -208,7 +210,7 @@ Describe "ConfigureWSL WSL Functions" {
             $global:LASTEXITCODE = 0
         }
         
-        $result = Install-StarshipInWSL -DistroName "Ubuntu"
+        $result = Install-StarshipInWSL -DistroName "Ubuntu" -Username "testuser"
         $result | Should BeOfType [System.Boolean]
     }
 }
